@@ -1,28 +1,18 @@
-from llm.summarizer import summarize_chunk, summarize_document
+import re
+
+from llm.summarizer import summarize_research_paper
 from parser.pdf_parser import parse_pdf
 from parser.reference_extractor import extract_references
-from utils.chunker import chunk_text
+from utils.section_extractor import build_summary_input
 
-MAX_SUMMARY_CHUNKS = 4
-REFERENCE_KEYWORDS = ["References", "REFERENCES", "bibliography", "Bibliography"]
+REFERENCE_HEADING_RE = re.compile(r"(?im)^\s*(references|bibliography)\s*$")
 
 def remove_references_section(text: str) -> str:
-    for keyword in REFERENCE_KEYWORDS:
-        if keyword in text:
-            return text.split(keyword)[0]
+    match = REFERENCE_HEADING_RE.search(text)
+    if match:
+        return text[:match.start()]
 
     return text
-
-def sample_chunks(chunks: list[str], k: int = MAX_SUMMARY_CHUNKS) -> list[str]:
-    if len(chunks) <= k:
-        return chunks
-
-    if k == 1:
-        return [chunks[0]]
-
-    last_index = len(chunks) - 1
-    indices = [round(i * last_index / (k - 1)) for i in range(k)]
-    return [chunks[i] for i in indices]
 
 def run_pipeline(file_path: str):
     # Parse PDF
@@ -38,30 +28,10 @@ def run_pipeline(file_path: str):
             "references": []
         }
 
-    # Chunking
     body_text = remove_references_section(text)
-    chunks = sample_chunks(chunk_text(body_text))
+    summary_input, selected_sections = build_summary_input(body_text)
 
-    # Summarize each chunk
-    chunk_summaries = []
-    for chunk in chunks:
-        if len(chunk.strip()) < 200:
-            continue
-        try:
-            result = summarize_chunk(chunk)
-        except Exception as error:
-            result = {
-                "summary": f"Chunk summarization failed: {error}",
-                "key_points": []
-            }
-        chunk_summaries.append(result)
-
-    successful_chunk_summaries = [
-        summary for summary in chunk_summaries
-        if summary.get("summary")
-    ]
-
-    if not successful_chunk_summaries:
+    if len(summary_input.strip()) < 200:
         return {
             "document_summary": {
                 "summary": "The PDF text was extracted, but no chunk was long enough to summarize.",
@@ -72,12 +42,12 @@ def run_pipeline(file_path: str):
             "references": extract_references(text)
         }
 
-    final_summary = summarize_document(successful_chunk_summaries)
-
+    final_summary = summarize_research_paper(summary_input)
     references = extract_references(text)
 
     return {
         "document_summary": final_summary,
-        "chunk_summaries": chunk_summaries,
-        "references": references
+        # "chunk_summaries": [],
+        "references": references,
+        "summary_input_sections": selected_sections
     }

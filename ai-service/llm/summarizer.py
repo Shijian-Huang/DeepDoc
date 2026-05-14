@@ -131,6 +131,38 @@ def summarize_document(chunk_summaries: list):
             "error": error.doc
         }
 
+def summarize_research_paper(evidence_packet: str):
+    prompt = f"""
+    You are analyzing a research paper from selected high-value sections.
+    Only use information from the provided text. Do not invent details.
+
+    Focus on:
+    - Main problem
+    - Core method
+    - Key findings
+    - Main contributions
+
+    Return ONLY valid JSON:
+    {{
+      "summary": "...",
+      "key_ideas": ["...", "..."],
+      "contributions": ["...", "..."]
+    }}
+
+    Paper text:
+    {evidence_packet}
+    """
+
+    try:
+        return generate_json(prompt)
+    except json.JSONDecodeError as error:
+        return {
+            "summary": "Document summary failed.",
+            "key_ideas": [],
+            "contributions": [],
+            "error": error.doc
+        }
+
 def extract_references_llm(ref_text: str):
     prompt = f"""
     You are extracting the bibliography from a research paper.
