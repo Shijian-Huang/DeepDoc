@@ -8,7 +8,10 @@ from pathlib import Path
 from pipeline import run_pipeline
 from storage import get_analysis, list_analyses, save_analysis
 
-app = FastAPI()
+app = FastAPI(
+    title="DeepDoc",
+    description="AI-powered research paper analysis service.",
+)
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
