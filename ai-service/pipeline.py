@@ -1,53 +1,60 @@
-import re
-
-from llm.summarizer import summarize_research_paper
-from parser.pdf_parser import parse_pdf
+from llm.summarizer import normalize_summary_mode, summarize_research_paper
+from parser.pdf_parser import parse_pdf_pages
 from parser.reference_extractor import extract_references
-from utils.section_extractor import build_summary_input
+from utils.section_extractor import build_summary_input_from_pages
 
-REFERENCE_HEADING_RE = re.compile(r"(?im)^\s*(references|bibliography)\s*$")
+def run_pipeline(file_path: str, summary_mode: str = "standard"):
+    normalized_mode = normalize_summary_mode(summary_mode)
 
-def remove_references_section(text: str) -> str:
-    match = REFERENCE_HEADING_RE.search(text)
-    if match:
-        return text[:match.start()]
-
-    return text
-
-def run_pipeline(file_path: str):
     # Parse PDF
-    text = parse_pdf(file_path)
+    pages = parse_pdf_pages(file_path)
+    text = "\n".join(page["text"] for page in pages)
+    raw_text = "\n".join(page.get("raw_text", page["text"]) for page in pages)
     if not text.strip():
         return {
+            "summary_mode": normalized_mode,
             "document_summary": {
                 "summary": "No readable text was found in the PDF.",
                 "key_ideas": [],
-                "contributions": []
+                "contributions": [],
+                "evidence": []
             },
             "chunk_summaries": [],
-            "references": []
+            "references": [],
+            "evidence_sources": []
         }
 
-    body_text = remove_references_section(text)
-    summary_input, selected_sections = build_summary_input(body_text)
+    summary_input, selected_sections, evidence_sources = build_summary_input_from_pages(
+        pages,
+        summary_mode=normalized_mode,
+    )
 
     if len(summary_input.strip()) < 200:
         return {
+            "summary_mode": normalized_mode,
             "document_summary": {
                 "summary": "The PDF text was extracted, but no chunk was long enough to summarize.",
                 "key_ideas": [],
-                "contributions": []
+                "contributions": [],
+                "evidence": []
             },
             "chunk_summaries": [],
-            "references": extract_references(text)
+            "references": extract_references(raw_text),
+            "summary_input_sections": selected_sections,
+            "evidence_sources": evidence_sources
         }
 
-    final_summary = summarize_research_paper(summary_input)
-    references = extract_references(text)
+    final_summary = summarize_research_paper(
+        summary_input,
+        summary_mode=normalized_mode,
+    )
+    references = extract_references(raw_text)
 
     return {
+        "summary_mode": normalized_mode,
         "document_summary": final_summary,
         # "chunk_summaries": [],
         "references": references,
-        "summary_input_sections": selected_sections
+        "summary_input_sections": selected_sections,
+        "evidence_sources": evidence_sources
     }

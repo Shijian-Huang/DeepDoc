@@ -21,6 +21,12 @@ gemini_models = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite"]
 request_interval_seconds = 4.1
 last_request_at = 0.0
 
+SUMMARY_MODE_INSTRUCTIONS = {
+    "paragraph": "Write one concise paragraph, around 80-120 words.",
+    "standard": "Write 2-3 concise paragraphs, around 200-300 words.",
+    "one_page": "Write a detailed one-page summary, around 500-700 words.",
+}
+
 def wait_for_rate_limit():
     global last_request_at
 
@@ -131,22 +137,43 @@ def summarize_document(chunk_summaries: list):
             "error": error.doc
         }
 
-def summarize_research_paper(evidence_packet: str):
+def normalize_summary_mode(summary_mode: str) -> str:
+    if summary_mode in SUMMARY_MODE_INSTRUCTIONS:
+        return summary_mode
+
+    return "standard"
+
+
+def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard"):
+    normalized_mode = normalize_summary_mode(summary_mode)
+    length_instruction = SUMMARY_MODE_INSTRUCTIONS[normalized_mode]
+
     prompt = f"""
     You are analyzing a research paper from selected high-value sections.
     Only use information from the provided text. Do not invent details.
+
+    Summary mode: {normalized_mode}
+    Length requirement: {length_instruction}
 
     Focus on:
     - Main problem
     - Core method
     - Key findings
     - Main contributions
+    - Evidence-grounded claims
 
     Return ONLY valid JSON:
     {{
       "summary": "...",
       "key_ideas": ["...", "..."],
-      "contributions": ["...", "..."]
+      "contributions": ["...", "..."],
+      "evidence": [
+        {{
+          "claim": "...",
+          "section": "abstract|introduction|method|experiment|results|conclusion|related_work",
+          "pages": [1, 2]
+        }}
+      ]
     }}
 
     Paper text:
@@ -160,6 +187,7 @@ def summarize_research_paper(evidence_packet: str):
             "summary": "Document summary failed.",
             "key_ideas": [],
             "contributions": [],
+            "evidence": [],
             "error": error.doc
         }
 
