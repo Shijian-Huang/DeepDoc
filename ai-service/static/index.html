@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeepDoc</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">DeepDoc</p>
+            <h1>Research PDF Analysis</h1>
+          </div>
+          <a class="docs-link" href="/docs">API Docs</a>
+        </header>
+
+        <section class="tool-surface" aria-label="PDF analysis controls">
+          <form id="uploadForm" class="upload-form">
+            <label class="drop-zone" for="pdfFile">
+              <input id="pdfFile" name="file" type="file" accept="application/pdf" required />
+              <span class="drop-icon">PDF</span>
+              <span class="drop-title" id="fileLabel">Choose a PDF</span>
+              <span class="drop-meta">Maximum usefulness comes from text-based research papers.</span>
+            </label>
+
+            <fieldset class="mode-group">
+              <legend>Summary mode</legend>
+              <label>
+                <input type="radio" name="summaryMode" value="paragraph" />
+                <span>Paragraph</span>
+              </label>
+              <label>
+                <input type="radio" name="summaryMode" value="standard" checked />
+                <span>Standard</span>
+              </label>
+              <label>
+                <input type="radio" name="summaryMode" value="one_page" />
+                <span>One page</span>
+              </label>
+            </fieldset>
+
+            <button id="analyzeButton" class="primary-button" type="submit">
+              Analyze PDF
+            </button>
+          </form>
+        </section>
+
+        <section id="statusPanel" class="status-panel" hidden>
+          <div class="spinner"></div>
+          <p id="statusText">Analyzing paper...</p>
+        </section>
+
+        <section id="resultPanel" class="result-panel empty-state">
+          <div class="empty-copy">
+            <p class="eyebrow">Ready</p>
+            <h2>Upload a paper to generate a structured analysis.</h2>
+          </div>
+        </section>
+      </section>
+
+      <aside class="history-panel" aria-label="Analysis history">
+        <div class="history-header">
+          <div>
+            <p class="eyebrow">History</p>
+            <h2>Recent Analyses</h2>
+          </div>
+          <button id="refreshHistoryButton" class="ghost-button" type="button">Refresh</button>
+        </div>
+        <div id="historyList" class="history-list"></div>
+      </aside>
+    </main>
+
+    <template id="resultTemplate">
+      <div class="result-header">
+        <div>
+          <p class="eyebrow" data-field="mode"></p>
+          <h2 data-field="title">Analysis Result</h2>
+          <p class="result-meta" data-field="meta"></p>
+        </div>
+        <a class="download-button" data-field="download" href="#">Download JSON</a>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab-button active" type="button" data-tab="summary">Summary</button>
+        <button class="tab-button" type="button" data-tab="evidence">Evidence</button>
+        <button class="tab-button" type="button" data-tab="references">References</button>
+      </div>
+
+      <section class="tab-panel active" data-panel="summary">
+        <article class="summary-block">
+          <h3>Document Summary</h3>
+          <p data-field="summary"></p>
+        </article>
+        <div class="summary-grid">
+          <article>
+            <h3>Key Ideas</h3>
+            <ul data-field="keyIdeas"></ul>
+          </article>
+          <article>
+            <h3>Contributions</h3>
+            <ul data-field="contributions"></ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-panel="evidence">
+        <div class="evidence-layout">
+          <article>
+            <h3>Claim Evidence</h3>
+            <div data-field="evidence"></div>
+          </article>
+          <article>
+            <h3>Source Sections</h3>
+            <div data-field="sources"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-panel="references">
+        <article>
+          <h3>References</h3>
+          <ol data-field="references"></ol>
+        </article>
+      </section>
+    </template>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

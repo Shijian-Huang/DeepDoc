@@ -1,4 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timezone
 import os
 import shutil
@@ -14,7 +16,16 @@ app = FastAPI(
 )
 
 UPLOAD_DIR = "uploads"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/")
+async def read_index():
+    return FileResponse(STATIC_DIR / "index.html")
+
 
 @app.post("/analyze-pdf")
 async def analyze_pdf(
@@ -43,6 +54,20 @@ async def analyze_pdf(
 @app.get("/analyses")
 async def get_analyses():
     return {"analyses": list_analyses()}
+
+
+@app.get("/analyses/{analysis_id}/download")
+async def download_analysis(analysis_id: str):
+    record = get_analysis(analysis_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    filename = Path(record.get("filename") or "analysis").stem
+    return FileResponse(
+        Path(__file__).resolve().parent / "data" / "analyses" / f"{analysis_id}.json",
+        media_type="application/json",
+        filename=f"{filename}-{analysis_id}.json",
+    )
 
 
 @app.get("/analyses/{analysis_id}")

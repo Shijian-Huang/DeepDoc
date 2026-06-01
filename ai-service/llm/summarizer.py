@@ -3,6 +3,7 @@ import json
 import re
 import time
 from pathlib import Path
+from typing import Optional
 from google import genai
 from google.genai import types
 from google.genai import errors
@@ -22,9 +23,29 @@ request_interval_seconds = 4.1
 last_request_at = 0.0
 
 SUMMARY_MODE_INSTRUCTIONS = {
-    "paragraph": "Write one concise paragraph, around 80-120 words.",
-    "standard": "Write 2-3 concise paragraphs, around 200-300 words.",
-    "one_page": "Write a detailed one-page summary, around 500-700 words.",
+    "paragraph": (
+        "Write exactly one concise paragraph. The summary field must be 80-120 words."
+    ),
+    "standard": (
+        "Write 2-3 developed paragraphs. The summary field must be 220-300 words. "
+        "Do not write fewer than 200 words."
+    ),
+    "one_page": (
+        "Write 4-6 well-developed paragraphs. The summary field must be 500-650 words. "
+        "Do not write fewer than 450 words."
+    ),
+}
+
+SUMMARY_MODE_MIN_WORDS = {
+    "paragraph": 80,
+    "standard": 200,
+    "one_page": 450,
+}
+
+SUMMARY_MODE_TARGET_WORDS = {
+    "paragraph": "80-120",
+    "standard": "220-300",
+    "one_page": "500-650",
 }
 
 def wait_for_rate_limit():
@@ -144,16 +165,38 @@ def normalize_summary_mode(summary_mode: str) -> str:
     return "standard"
 
 
-def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard"):
-    normalized_mode = normalize_summary_mode(summary_mode)
-    length_instruction = SUMMARY_MODE_INSTRUCTIONS[normalized_mode]
+def count_words(text: str) -> int:
+    return len(re.findall(r"\b[\w'-]+\b", text))
 
-    prompt = f"""
+
+def needs_summary_expansion(result: dict, summary_mode: str) -> bool:
+    summary = result.get("summary", "")
+    return count_words(summary) < SUMMARY_MODE_MIN_WORDS[summary_mode]
+
+
+def build_research_summary_prompt(
+    evidence_packet: str,
+    summary_mode: str,
+    retry_word_count: Optional[int] = None,
+) -> str:
+    length_instruction = SUMMARY_MODE_INSTRUCTIONS[summary_mode]
+    retry_instruction = ""
+    if retry_word_count is not None:
+        retry_instruction = f"""
+    Previous attempt was too short at {retry_word_count} words.
+    Rewrite and expand the summary field to {SUMMARY_MODE_TARGET_WORDS[summary_mode]} words.
+    Keep the summary faithful to the provided paper text.
+    """
+
+    return f"""
     You are analyzing a research paper from selected high-value sections.
     Only use information from the provided text. Do not invent details.
 
-    Summary mode: {normalized_mode}
+    Summary mode: {summary_mode}
     Length requirement: {length_instruction}
+    The length requirement applies only to the "summary" field.
+    Do not count key_ideas, contributions, references, evidence, or summary_word_count toward the word count.
+    {retry_instruction}
 
     Focus on:
     - Main problem
@@ -165,6 +208,7 @@ def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard
     Return ONLY valid JSON:
     {{
       "summary": "...",
+      "summary_word_count": 0,
       "key_ideas": ["...", "..."],
       "contributions": ["...", "..."],
       "evidence": [
@@ -180,11 +224,33 @@ def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard
     {evidence_packet}
     """
 
+
+def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard"):
+    normalized_mode = normalize_summary_mode(summary_mode)
+    prompt = build_research_summary_prompt(evidence_packet, normalized_mode)
+
     try:
-        return generate_json(prompt)
+        result = generate_json(prompt)
+        word_count = count_words(result.get("summary", ""))
+        result["summary_word_count"] = word_count
+
+        if needs_summary_expansion(result, normalized_mode):
+            retry_prompt = build_research_summary_prompt(
+                evidence_packet,
+                normalized_mode,
+                retry_word_count=word_count,
+            )
+            retry_result = generate_json(retry_prompt)
+            retry_result["summary_word_count"] = count_words(
+                retry_result.get("summary", "")
+            )
+            return retry_result
+
+        return result
     except json.JSONDecodeError as error:
         return {
             "summary": "Document summary failed.",
+            "summary_word_count": 0,
             "key_ideas": [],
             "contributions": [],
             "evidence": [],
