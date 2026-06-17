@@ -10,9 +10,9 @@
     <main class="app-shell">
       <section class="workspace">
         <header class="topbar">
-          <div>
-            <p class="eyebrow">DeepDoc</p>
-            <h1>Research PDF Analysis</h1>
+          <div class="brand-lockup">
+            <h1>DeepDoc</h1>
+            <p class="hero-subtitle">Research PDF analysis</p>
           </div>
           <a class="docs-link" href="/docs">API Docs</a>
         </header>
@@ -87,6 +87,7 @@
         <button class="tab-button active" type="button" data-tab="summary">Summary</button>
         <button class="tab-button" type="button" data-tab="evidence">Evidence</button>
         <button class="tab-button" type="button" data-tab="references">References</button>
+        <button class="tab-button" type="button" data-tab="video">Video Script</button>
       </div>
 
       <section class="tab-panel active" data-panel="summary">
@@ -125,8 +126,26 @@
           <ol data-field="references"></ol>
         </article>
       </section>
+
+      <section class="tab-panel" data-panel="video">
+        <article class="video-script-panel">
+          <div class="video-script-header">
+            <div>
+              <h3>Video Script</h3>
+              <p class="result-meta">Generate a narrated slide outline from this analysis.</p>
+            </div>
+            <div class="video-actions">
+              <button class="primary-button" type="button" data-field="generateVideoScript">Generate Script</button>
+              <button class="ghost-button" type="button" data-field="generateVideo">Generate Video</button>
+              <a class="download-button muted-download" data-field="downloadVideo" href="#" hidden>Download MP4</a>
+            </div>
+          </div>
+          <div data-field="videoStatus" class="result-meta"></div>
+          <div data-field="videoScript"></div>
+        </article>
+      </section>
     </template>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=paper-title-20260617"></script>
   </body>
 </html>

@@ -51,6 +51,28 @@ uploadForm.addEventListener("submit", async (event) => {
 });
 
 refreshHistoryButton.addEventListener("click", loadHistory);
+resultPanel.addEventListener("click", handleResultPanelClick);
+
+
+function handleResultPanelClick(event) {
+  const scriptButton = event.target.closest('[data-field="generateVideoScript"]');
+  const videoButton = event.target.closest('[data-field="generateVideo"]');
+  if (!scriptButton && !videoButton) return;
+
+  const analysisId = resultPanel.dataset.analysisId;
+  if (!analysisId) return;
+
+  const videoContainer = resultPanel.querySelector('[data-field="videoScript"]');
+  const videoStatus = resultPanel.querySelector('[data-field="videoStatus"]');
+  const downloadVideoLink = resultPanel.querySelector('[data-field="downloadVideo"]');
+
+  if (scriptButton) {
+    generateVideoScript(analysisId, videoContainer, scriptButton);
+  }
+  if (videoButton) {
+    generateVideo(analysisId, videoStatus, downloadVideoLink, videoButton);
+  }
+}
 
 function setBusy(isBusy, message = "") {
   analyzeButton.disabled = isBusy;
@@ -73,9 +95,10 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
   const node = resultTemplate.content.cloneNode(true);
   const summary = result.document_summary || {};
   const analysisId = result.analysis_id;
+  const paperTitle = result.paper_title || summary.title || result.video_script?.title || fallbackFilename;
 
   node.querySelector('[data-field="mode"]').textContent = formatMode(result.summary_mode);
-  node.querySelector('[data-field="title"]').textContent = fallbackFilename;
+  node.querySelector('[data-field="title"]').textContent = paperTitle;
   node.querySelector('[data-field="meta"]').textContent = formatMeta(result);
   node.querySelector('[data-field="summary"]').textContent = summary.summary || "No summary returned.";
 
@@ -91,11 +114,127 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
   renderEvidence(node.querySelector('[data-field="evidence"]'), summary.evidence || []);
   renderSources(node.querySelector('[data-field="sources"]'), result.evidence_sources || []);
   renderReferences(node.querySelector('[data-field="references"]'), result.references || []);
+  const videoContainer = node.querySelector('[data-field="videoScript"]');
+  const videoStatus = node.querySelector('[data-field="videoStatus"]');
+  const videoButton = node.querySelector('[data-field="generateVideoScript"]');
+  const generateVideoButton = node.querySelector('[data-field="generateVideo"]');
+  const downloadVideoLink = node.querySelector('[data-field="downloadVideo"]');
+  renderVideoScript(videoContainer, result.video_script);
+  renderVideoResult(videoStatus, downloadVideoLink, result.video);
+  if (!analysisId) {
+    videoButton.disabled = true;
+    generateVideoButton.disabled = true;
+    videoStatus.textContent = "This saved record is missing an analysis id. Reopen it from History or rerun analysis.";
+  }
 
   resultPanel.className = "result-panel";
+  resultPanel.dataset.analysisId = analysisId || "";
   resultPanel.innerHTML = "";
   resultPanel.appendChild(node);
   bindTabs(resultPanel);
+}
+
+async function generateVideo(analysisId, statusContainer, downloadLink, button) {
+  button.disabled = true;
+  button.textContent = "Generating...";
+  statusContainer.textContent = "Generating MP4 locally...";
+  downloadLink.hidden = true;
+
+  try {
+    const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}/video`, {
+      method: "POST",
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || `Video generation failed with status ${response.status}`);
+    }
+
+    renderVideoResult(statusContainer, downloadLink, payload.video);
+    await loadHistory();
+  } catch (error) {
+    statusContainer.textContent = error.message || "Video generation failed.";
+  } finally {
+    button.disabled = false;
+    button.textContent = "Generate Video";
+  }
+}
+
+function renderVideoResult(statusContainer, downloadLink, video) {
+  if (!video || !video.video_url) {
+    statusContainer.textContent = "No MP4 generated yet.";
+    downloadLink.hidden = true;
+    return;
+  }
+
+  statusContainer.textContent = `Generated ${video.scene_count || ""} scenes at ${formatDate(video.generated_at)}.`;
+  downloadLink.href = video.video_url;
+  downloadLink.hidden = false;
+}
+
+async function generateVideoScript(analysisId, container, button) {
+  const statusContainer = resultPanel.querySelector('[data-field="videoStatus"]');
+  button.disabled = true;
+  button.textContent = "Generating...";
+  if (statusContainer) statusContainer.textContent = "Generating video script with Gemini...";
+  container.innerHTML = '<p class="result-meta">Creating video script...</p>';
+
+  try {
+    const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}/video-script`, {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      throw new Error(`Video script failed with status ${response.status}`);
+    }
+
+    const payload = await response.json();
+    renderVideoScript(container, payload.video_script);
+    if (statusContainer) statusContainer.textContent = "Video script generated.";
+    await loadHistory();
+  } catch (error) {
+    const message = error.message || "Video script failed.";
+    if (statusContainer) statusContainer.textContent = message;
+    container.innerHTML = `<p class="result-meta">${escapeHtml(message)}</p>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Regenerate Script";
+  }
+}
+
+function renderVideoScript(container, script) {
+  container.innerHTML = "";
+  if (!script || !Array.isArray(script.scenes) || script.scenes.length === 0) {
+    container.innerHTML = '<p class="result-meta">No video script generated yet.</p>';
+    return;
+  }
+
+  const header = document.createElement("div");
+  header.className = "script-overview";
+  header.innerHTML = `
+    <strong>${escapeHtml(script.title || "Research explainer")}</strong>
+    <span>${escapeHtml(String(script.duration_seconds || ""))} seconds · ${escapeHtml(script.audience || "general audience")}</span>
+  `;
+  container.appendChild(header);
+
+  script.scenes.forEach((scene, index) => {
+    const card = document.createElement("article");
+    card.className = "scene-card";
+    const bullets = Array.isArray(scene.bullets) ? scene.bullets : [];
+    const evidence = scene.evidence && typeof scene.evidence === "object" ? scene.evidence : null;
+    const evidenceLine = evidence?.claim
+      ? `<p class="result-meta"><strong>Evidence:</strong> ${escapeHtml(evidence.section || "section")} · ${escapeHtml(formatPages(evidence.pages))}<br>${escapeHtml(evidence.claim || "")}</p>`
+      : "";
+    card.innerHTML = `
+      <div class="card-meta">Scene ${escapeHtml(scene.scene_number || index + 1)} · ${escapeHtml(scene.role || "scene")}</div>
+      <h4>${escapeHtml(scene.heading || "Untitled scene")}</h4>
+      <ul>${bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>
+      <p><strong>Voiceover:</strong> ${escapeHtml(scene.voiceover || "")}</p>
+      ${evidenceLine}
+      <p class="result-meta"><strong>Visual:</strong> ${escapeHtml(scene.visual_type || "template")} · ${escapeHtml(scene.visual_note || "")}</p>
+    `;
+    container.appendChild(card);
+  });
 }
 
 function renderList(container, items) {
@@ -201,8 +340,10 @@ function renderHistory(items) {
   items.forEach((item) => {
     const card = document.createElement("article");
     card.className = "history-item";
+    const displayTitle = item.paper_title || item.filename || "Untitled PDF";
     card.innerHTML = `
-      <strong>${escapeHtml(item.filename || "Untitled PDF")}</strong>
+      <strong>${escapeHtml(displayTitle)}</strong>
+      ${item.paper_title && item.filename ? `<p class="result-meta">${escapeHtml(item.filename)}</p>` : ""}
       <p>${escapeHtml(formatMode(item.summary_mode))} · ${escapeHtml(formatDate(item.created_at))} · ${escapeHtml(formatSeconds(item.processing_seconds))}</p>
       <p>${escapeHtml(trimText(item.summary || "", 145))}</p>
       <div class="history-actions">
@@ -226,7 +367,9 @@ async function openAnalysis(analysisId) {
     }
 
     const record = await response.json();
-    renderResult(record.result || {}, record.filename || "Saved Analysis");
+    const result = record.result || {};
+    result.analysis_id = result.analysis_id || record.analysis_id;
+    renderResult(result, record.filename || "Saved Analysis");
   } catch (error) {
     renderError(error.message);
   } finally {

@@ -43,13 +43,15 @@ def list_analyses() -> list[dict]:
             continue
 
         result = record.get("result", {})
+        summary = result.get("document_summary", {})
         analyses.append({
             "analysis_id": record.get("analysis_id"),
             "filename": record.get("filename"),
+            "paper_title": result.get("paper_title") or summary.get("title"),
             "created_at": record.get("created_at"),
             "summary_mode": result.get("summary_mode"),
             "processing_seconds": result.get("processing_seconds"),
-            "summary": result.get("document_summary", {}).get("summary", ""),
+            "summary": summary.get("summary", ""),
         })
 
     return sorted(
@@ -72,3 +74,28 @@ def get_analysis(analysis_id: str) -> Optional[dict]:
         return json.loads(record_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+
+def save_video_script(analysis_id: str, video_script: dict) -> Optional[dict]:
+    record = get_analysis(analysis_id)
+    if not record:
+        return None
+
+    result = record.setdefault("result", {})
+    result["video_script"] = video_script
+    result["video_script_generated_at"] = datetime.now(timezone.utc).isoformat()
+
+    record_path = DATA_DIR / f"{analysis_id}.json"
+    record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return record
+
+def save_video_result(analysis_id: str, video_result: dict) -> Optional[dict]:
+    record = get_analysis(analysis_id)
+    if not record:
+        return None
+
+    result = record.setdefault("result", {})
+    result["video"] = video_result
+
+    record_path = DATA_DIR / f"{analysis_id}.json"
+    record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return record
