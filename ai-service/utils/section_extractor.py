@@ -16,9 +16,15 @@ SECTION_ALIASES = {
         "architecture",
     ],
     "experiment": ["experiment", "experiments", "evaluation", "setup"],
-    "results": ["result", "results", "discussion", "analysis", "findings"],
-    "conclusion": ["conclusion", "conclusions", "future work"],
-    "references": ["references", "bibliography"],
+    "results": ["result", "results", "analysis", "findings"],
+    "conclusion": ["conclusion", "conclusions", "discussion", "future work"],
+    "references": [
+        "references",
+        "references and notes",
+        "bibliography",
+        "literature cited",
+        "cited references",
+    ],
 }
 
 SECTION_BUDGETS = {
@@ -47,6 +53,26 @@ SECTION_PRIORITY = [
     "related_work",
 ]
 
+EMBEDDED_HEADING_PATTERNS = [
+    ("references", re.compile(r"\b(?:References(?:\s+and\s+Notes)?|Bibliography|Literature\s+Cited|Cited\s+References)\s+")),
+    ("conclusion", re.compile(r"\bDiscussion\s+")),
+    ("conclusion", re.compile(r"\bDiscussion\s+and\s+Conclusions?\s+")),
+    ("conclusion", re.compile(r"\bConclusion\.\s+")),
+    ("conclusion", re.compile(r"\bConclusions?\s+and\s+Outlook\s+")),
+    ("conclusion", re.compile(r"\bLimitations\.\s+")),
+    ("results", re.compile(r"\bRelation to concurrent probabilistic sequence layers\.\s+")),
+    ("experiment", re.compile(r"\bExperiments\s*$")),
+    ("experiment", re.compile(r"\bNumerical\s+Results\s+")),
+    ("results", re.compile(r"\bTheoretical\s+Results\s+")),
+    ("method", re.compile(r"\bMaterials\s+and\s+Methods\s+")),
+    ("method", re.compile(r"\bMethods\s+")),
+    ("experiment", re.compile(r"\b4(?:\.\d+)+\s+[A-Z][A-Za-z0-9 ,:;()/'’–-]{4,}\s+")),
+    ("method", re.compile(r"\b3(?:\.\d+)+\s+[A-Z][A-Za-z0-9 ,:;()/'’–⇒-]{4,}\s+")),
+    ("method", re.compile(r"\b2(?:\.\d+)+\s+[A-Z][A-Za-z0-9 ,:;()/'’–-]{4,}\s+")),
+    ("method", re.compile(r"\bThe design-model framework\s+")),
+    ("method", re.compile(r"\bSpecializations of the design model\s+")),
+]
+
 HEADING_PREFIX_RE = re.compile(
     r"^\s*(?:"
     r"\d+(?:\.\d+)*\.?\s+|"
@@ -60,6 +86,8 @@ HEADING_RE = re.compile(
     r"[A-Z][A-Za-z0-9 &,/():'-]{2,90}\s*$"
 )
 
+INLINE_REFERENCE_START_RE = re.compile(r"^\s*\[\d+\]\s+")
+
 
 def normalize_heading(line: str) -> Optional[str]:
     cleaned = HEADING_PREFIX_RE.sub("", line).strip().lower()
@@ -72,6 +100,26 @@ def normalize_heading(line: str) -> Optional[str]:
     return None
 
 
+def split_embedded_heading(line: str) -> Optional[tuple[str, str, str]]:
+    earliest: Optional[tuple[int, int, str, str]] = None
+    for section_name, pattern in EMBEDDED_HEADING_PATTERNS:
+        match = pattern.search(line)
+        if not match:
+            continue
+        if earliest is None or match.start() < earliest[0]:
+            earliest = (match.start(), match.end(), section_name, match.group())
+
+    if earliest is None:
+        return None
+
+    start, end, section_name, heading = earliest
+    before = line[:start].strip()
+    after = line[end:].strip()
+    if section_name == "experiment" and heading.strip() == "Experiments":
+        after = ""
+    return before, section_name, after
+
+
 def split_into_sections(text: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current_name = "preamble"
@@ -79,6 +127,11 @@ def split_into_sections(text: str) -> dict[str, str]:
 
     for line in text.splitlines():
         stripped = line.strip()
+        if INLINE_REFERENCE_START_RE.match(stripped):
+            if current_lines:
+                sections.setdefault(current_name, []).extend(current_lines)
+            break
+
         normalized = normalize_heading(stripped) if HEADING_RE.match(stripped) else None
 
         if normalized:
@@ -88,6 +141,21 @@ def split_into_sections(text: str) -> dict[str, str]:
             current_lines = []
             if normalized == "references":
                 break
+            continue
+
+        embedded = split_embedded_heading(line)
+        if embedded:
+            before, embedded_name, after = embedded
+            if before:
+                current_lines.append(before)
+            if current_lines:
+                sections.setdefault(current_name, []).extend(current_lines)
+            current_name = embedded_name
+            current_lines = []
+            if embedded_name == "references":
+                break
+            if after:
+                current_lines.append(after)
             continue
 
         current_lines.append(line)
@@ -125,6 +193,11 @@ def split_pages_into_sections(pages: list[dict]) -> dict[str, dict]:
         page_number = int(page["page"])
         for line in page["text"].splitlines():
             stripped = line.strip()
+            if INLINE_REFERENCE_START_RE.match(stripped):
+                flush_current()
+                reached_references = True
+                break
+
             normalized = normalize_heading(stripped) if HEADING_RE.match(stripped) else None
 
             if normalized:
@@ -137,6 +210,24 @@ def split_pages_into_sections(pages: list[dict]) -> dict[str, dict]:
                     break
                 continue
 
+            embedded = split_embedded_heading(line)
+            if embedded:
+                before, embedded_name, after = embedded
+                if before:
+                    current_lines.append(before)
+                    current_pages.add(page_number)
+                flush_current()
+                current_name = embedded_name
+                current_lines = []
+                current_pages = set()
+                if embedded_name == "references":
+                    reached_references = True
+                    break
+                if after:
+                    current_lines.append(after)
+                    current_pages.add(page_number)
+                continue
+
             current_lines.append(line)
             current_pages.add(page_number)
 
@@ -145,7 +236,7 @@ def split_pages_into_sections(pages: list[dict]) -> dict[str, dict]:
 
     flush_current()
 
-    return {
+    result = {
         name: {
             "text": "\n".join(section["lines"]).strip(),
             "pages": sorted(section["pages"]),
@@ -153,12 +244,86 @@ def split_pages_into_sections(pages: list[dict]) -> dict[str, dict]:
         for name, section in sections.items()
         if "\n".join(section["lines"]).strip()
     }
+    return _augment_sparse_sections(result)
+
+
+def _augment_sparse_sections(sections: dict[str, dict]) -> dict[str, dict]:
+    if set(sections) != {"preamble"}:
+        return sections
+
+    preamble = sections["preamble"]
+    pages = preamble.get("pages") or []
+    text = preamble.get("text", "")
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(pages) < 3 or len(lines) < 30:
+        return sections
+
+    first_cut = max(12, len(lines) // 3)
+    second_cut = max(first_cut + 12, (len(lines) * 2) // 3)
+    page_first_cut = max(1, len(pages) // 3)
+    page_second_cut = max(page_first_cut + 1, (len(pages) * 2) // 3)
+
+    return {
+        "preamble": {
+            "text": "\n".join(lines[:6]).strip(),
+            "pages": pages[:1],
+        },
+        "introduction": {
+            "text": "\n".join(lines[6:first_cut]).strip(),
+            "pages": pages[:page_first_cut],
+        },
+        "method": {
+            "text": "\n".join(lines[first_cut:second_cut]).strip(),
+            "pages": pages[page_first_cut:page_second_cut],
+        },
+        "conclusion": {
+            "text": "\n".join(lines[second_cut:]).strip(),
+            "pages": pages[page_second_cut:] or pages[-1:],
+        },
+    }
+
+
+def _section_with_preamble_fallback(sections: dict[str, dict], section_name: str) -> Optional[dict]:
+    section = sections.get(section_name)
+    if section:
+        return section
+    if section_name == "introduction" and not sections.get("abstract"):
+        return sections.get("preamble")
+    return None
 
 
 def _clean_section_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
+
+
+def _clean_preamble_as_introduction(text: str) -> str:
+    cleaned = _clean_section_text(text)
+    metadata_patterns = [
+        r"\b\*?\s*Corresponding author\.\s*Email:\s*\S+\s+",
+        r"\bEmail:\s*\S+\s+",
+    ]
+    for pattern in metadata_patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if match and len(cleaned) - match.end() > 300:
+            return cleaned[match.end():].strip()
+
+    sentence_starts = [
+        "Artificial intelligence",
+        "Here,",
+        "In this",
+        "We ",
+        "This ",
+    ]
+    candidates = [
+        cleaned.find(start)
+        for start in sentence_starts
+        if cleaned.find(start) > 80
+    ]
+    if candidates:
+        return cleaned[min(candidates):].strip()
+    return cleaned
 
 
 def _fallback_excerpt(text: str, max_chars: int) -> str:
@@ -211,12 +376,15 @@ def build_summary_input_from_pages(
     evidence_sources: list[dict] = []
 
     for section_name in SECTION_PRIORITY:
-        section = sections.get(section_name)
+        section = _section_with_preamble_fallback(sections, section_name)
         if not section:
             continue
 
         budget = SECTION_BUDGETS.get(section_name, 1500)
-        excerpt = _clean_section_text(section["text"])[:budget].strip()
+        section_text = section["text"]
+        if section_name == "introduction" and not sections.get("introduction") and not sections.get("abstract"):
+            section_text = _clean_preamble_as_introduction(section_text)
+        excerpt = _clean_section_text(section_text)[:budget].strip()
         if not excerpt:
             continue
 

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
 VIDEO_DIR = Path(__file__).resolve().parent / "data" / "videos"
@@ -35,16 +35,18 @@ PIPER_LENGTH_SCALE = os.getenv("DEEPDOC_PIPER_LENGTH_SCALE", "1.08")
 PIPER_NOISE_SCALE = os.getenv("DEEPDOC_PIPER_NOISE_SCALE", "")
 PIPER_NOISE_W = os.getenv("DEEPDOC_PIPER_NOISE_W", "")
 
-INK = "#17202A"
-PAPER = "#F3F6F8"
+INK = "#1D1D1F"
+PAPER = "#F5F5F7"
 PANEL = "#FFFFFF"
-LINE = "#D8E0E7"
-TEAL = "#1F7A6D"
-BLUE = "#2F6F9F"
-WARM = "#B85C38"
-SOFT_TEAL = "#E7F2EF"
-SOFT_BLUE = "#E8F1F7"
-SOFT_WARM = "#F6EAE4"
+LINE = "#D2D2D7"
+MUTED = "#6E6E73"
+SECONDARY = "#3A3A3C"
+TEAL = "#007C89"
+BLUE = "#0071E3"
+WARM = "#8E44AD"
+SOFT_TEAL = "#E8F7F8"
+SOFT_BLUE = "#EAF4FF"
+SOFT_WARM = "#F6ECFA"
 
 
 class VideoGenerationError(RuntimeError):
@@ -305,11 +307,16 @@ def _scene_kind(scene: dict, index: int, total: int) -> str:
     role = _safe_text(str(scene.get("role") or "")).lower()
     if role in {
         "hook", "surprising_finding", "core_insight", "why_it_matters",
-        "mechanism", "technical_insight", "evidence", "risk", "takeaway",
+        "mechanism", "technical_insight", "method", "method_overview",
+        "strongest_evidence", "key_evidence", "evidence", "results",
+        "comparison", "boundary", "design_principle", "risk", "takeaway",
     }:
-        if role in {"hook", "surprising_finding", "evidence"}:
+        if role in {"hook", "surprising_finding", "strongest_evidence", "key_evidence", "evidence", "results"}:
             return "finding"
-        if role in {"core_insight", "why_it_matters", "mechanism", "technical_insight"}:
+        if role in {
+            "core_insight", "why_it_matters", "mechanism", "technical_insight",
+            "method", "method_overview", "comparison", "boundary", "design_principle",
+        }:
             return "method"
         if role == "risk":
             return "problem"
@@ -326,7 +333,7 @@ def _scene_kind(scene: dict, index: int, total: int) -> str:
     def has_phrase(phrases: list[str]) -> bool:
         return any(phrase in text for phrase in phrases)
 
-    if index == total or has_any(["future", "takeaway", "conclusion"]):
+    if index == total or has_any(["takeaway", "conclusion"]):
         return "takeaway"
     if has_any(["study", "participants", "participant", "measure", "measures", "performance", "comparison"]):
         return "study"
@@ -345,10 +352,10 @@ def _scene_kind(scene: dict, index: int, total: int) -> str:
 
 def _kind_style(kind: str) -> tuple[str, str, str]:
     styles = {
-        "problem": (WARM, SOFT_WARM, "Problem"),
+        "problem": (WARM, SOFT_WARM, "Challenge"),
         "method": (TEAL, SOFT_TEAL, "Method"),
         "study": (BLUE, SOFT_BLUE, "Study"),
-        "finding": (WARM, SOFT_WARM, "Finding"),
+        "finding": (BLUE, SOFT_BLUE, "Finding"),
         "takeaway": (TEAL, SOFT_TEAL, "Takeaway"),
     }
     return styles.get(kind, (TEAL, SOFT_TEAL, "Scene"))
@@ -363,38 +370,38 @@ def _draw_header(
     label: str,
     video_title: str,
 ) -> None:
-    brand_font = _load_font(19, bold=True)
-    title_font = _load_font(22, bold=True)
-    small_font = _load_font(17, bold=True)
-    draw.rectangle((0, 0, 1280, 132), fill=INK)
-    draw.text((72, 17), f"DeepDoc · Scene {index}/{total}", font=brand_font, fill="#DDE9EF")
-    title_lines = _wrap_limited_lines(video_title or "Research explainer", title_font, 840, 2)
-    y = 48
-    for line in title_lines:
-        draw.text((72, y), line, font=title_font, fill="#FFFFFF")
-        bbox = title_font.getbbox(line or " ")
-        y += bbox[3] - bbox[1] + 5
+    brand_font = _load_font(17, bold=True)
+    title_font = _load_font(16)
+    label_font = _load_font(14, bold=True)
+    scene_font = _load_font(17, bold=True)
+    draw.text((72, 42), "DeepDoc", font=brand_font, fill=INK)
 
-    pill_x0, pill_y0, pill_x1, pill_y1 = 990, 44, 1208, 84
-    draw.rounded_rectangle((pill_x0, pill_y0, pill_x1, pill_y1), radius=18, fill=accent)
+    title_text = _truncate_to_width(video_title or "Research explainer", title_font, 560)
+    draw.text((178, 43), title_text, font=title_font, fill=MUTED)
+
+    scene_text = f"{index:02d} / {total:02d}"
+    scene_width = _text_width(scene_text, scene_font)
+    draw.text((1208 - scene_width, 42), scene_text, font=scene_font, fill=INK)
+
     label_text = label.upper()
-    label_width = _text_width(label_text, small_font)
-    draw.text((pill_x0 + (pill_x1 - pill_x0 - label_width) / 2, 55), label_text, font=small_font, fill="#FFFFFF")
+    label_width = _text_width(label_text, label_font)
+    draw.text((72, 124), label_text, font=label_font, fill=accent)
+    draw.line((72, 150, 72 + label_width + 44, 150), fill=accent, width=3)
 
-    progress_width = int(1280 * index / total)
-    draw.rectangle((0, 129, 1280, 134), fill="#263444")
-    draw.rectangle((0, 129, progress_width, 134), fill=accent)
+    progress_width = int(1136 * index / max(total, 1))
+    draw.rounded_rectangle((72, 668, 1208, 671), radius=2, fill="#E5E5EA")
+    draw.rounded_rectangle((72, 668, 72 + progress_width, 671), radius=2, fill=accent)
 
 
 def _draw_title(draw: ImageDraw.ImageDraw, heading: str, x: int, y: int, max_width: int) -> int:
-    title_font = _load_font(42, bold=True)
+    title_font = _load_font(70, bold=True)
     return _draw_text_lines(
         draw,
-        _wrap_lines(heading, title_font, max_width)[:3],
+        _wrap_lines(heading, title_font, max_width)[:2],
         (x, y),
         title_font,
         INK,
-        12,
+        20,
     )
 
 
@@ -405,16 +412,16 @@ def _draw_bullets(
     y: int,
     max_width: int,
     accent: str,
-    font_size: int = 30,
-    limit: int = 4,
+    font_size: int = 27,
+    limit: int = 3,
 ) -> int:
     bullet_font = _load_font(font_size)
     for bullet in bullets[:limit]:
         wrapped = _wrap_lines(str(bullet), bullet_font, max_width)
-        if y > 540:
+        if y > 548:
             break
-        draw.ellipse((x, y + 11, x + 14, y + 25), fill=accent)
-        y = _draw_text_lines(draw, wrapped, (x + 34, y), bullet_font, "#253240", 8) + 12
+        draw.rounded_rectangle((x, y + 7, x + 4, y + 42), radius=2, fill=accent)
+        y = _draw_text_lines(draw, wrapped[:2], (x + 25, y), bullet_font, SECONDARY, 9) + 14
     return y
 
 
@@ -423,19 +430,19 @@ def _draw_subtitle(draw: ImageDraw.ImageDraw, voiceover: str, accent: str) -> No
     if not subtitle:
         return
 
-    x0, y0, x1, y1 = 72, 548, 1208, 704
-    max_width = x1 - x0 - 88
-    max_lines = 6
+    x0, y0, x1, y1 = 72, 552, 1208, 640
+    max_width = x1 - x0 - 64
+    max_lines = 4
     line_gap = 5
-    caption_font = _load_font(21)
+    caption_font = _load_font(18)
     lines = _wrap_lines(subtitle, caption_font, max_width)
 
-    for size in [21, 20, 19, 18, 17, 16, 15, 14]:
+    for size in [18, 17, 16, 15, 14, 13]:
         candidate_font = _load_font(size)
         candidate_lines = _wrap_lines(subtitle, candidate_font, max_width)
         line_height = candidate_font.getbbox("Ag")[3] - candidate_font.getbbox("Ag")[1]
         total_height = min(len(candidate_lines), max_lines) * line_height + (min(len(candidate_lines), max_lines) - 1) * line_gap
-        if len(candidate_lines) <= max_lines and total_height <= y1 - y0 - 32:
+        if len(candidate_lines) <= max_lines and total_height <= y1 - y0 - 8:
             caption_font = candidate_font
             lines = candidate_lines
             break
@@ -444,43 +451,117 @@ def _draw_subtitle(draw: ImageDraw.ImageDraw, voiceover: str, accent: str) -> No
         lines = lines[:max_lines]
         lines[-1] = _truncate_to_width(lines[-1], caption_font, max_width)
 
-    draw.rounded_rectangle((x0, y0, x1, y1), radius=12, fill="#FFFFFF", outline=LINE, width=2)
-    draw.rectangle((x0, y0, x0 + 18, y1), fill=accent)
-    _draw_text_lines(draw, lines, (x0 + 40, y0 + 22), caption_font, "#253240", line_gap)
+    draw.line((x0, y0 - 18, x1, y0 - 18), fill="#DADAE0", width=1)
+    _draw_text_lines(draw, lines, (x0, y0), caption_font, MUTED, line_gap)
+
+
+def _frosted_panel_image(size: tuple[int, int], radius: int = 34) -> Image.Image:
+    width, height = size
+    panel = Image.new("RGBA", size, (255, 255, 255, 0))
+    panel_draw = ImageDraw.Draw(panel)
+    panel_draw.rounded_rectangle(
+        (0, 0, width - 1, height - 1),
+        radius=radius,
+        fill=(255, 255, 255, 168),
+        outline=(255, 255, 255, 190),
+        width=1,
+    )
+    return panel
+
+
+def _draw_keynote_background(image: Image.Image, draw: ImageDraw.ImageDraw, accent: str) -> None:
+    draw.rectangle((0, 0, 1280, 720), fill=PAPER)
+    glow = Image.new("RGBA", image.size, (255, 255, 255, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    glow_draw.ellipse((890, 120, 1440, 690), fill=(0, 113, 227, 18))
+    glow_draw.ellipse((-180, 360, 360, 930), fill=(142, 68, 173, 14))
+    glow = glow.filter(ImageFilter.GaussianBlur(38))
+    image.alpha_composite(glow)
+    image.alpha_composite(_frosted_panel_image((1184, 492)), (48, 150))
+    draw.rectangle((0, 0, 1280, 104), fill="#FBFBFD")
+    draw.line((72, 104, 1208, 104), fill="#DADAE0", width=1)
+
+
+def _draw_large_scene_number(draw: ImageDraw.ImageDraw, index: int, accent: str, xy: tuple[int, int]) -> None:
+    number_font = _load_font(156, bold=True)
+    draw.text(xy, f"{index:02d}", font=number_font, fill="#E5E5EA")
+    draw.text((xy[0] + 3, xy[1]), f"{index:02d}", font=number_font, fill=accent)
+
+
+def _draw_takeaway_layout(
+    draw: ImageDraw.ImageDraw,
+    heading: str,
+    bullets: list[str],
+    accent: str,
+    index: int,
+) -> None:
+    y = _draw_title(draw, heading, 72, 184, 920) + 42
+    _draw_bullets(draw, bullets, 78, y, 760, accent, font_size=27, limit=3)
+
+
+def _draw_focus_layout(
+    draw: ImageDraw.ImageDraw,
+    heading: str,
+    bullets: list[str],
+    accent: str,
+) -> None:
+    y = _draw_title(draw, heading, 72, 176, 880) + 46
+    _draw_bullets(draw, bullets, 78, y, 760, accent, font_size=27, limit=3)
+
+
+def _draw_tiles_layout(
+    draw: ImageDraw.ImageDraw,
+    heading: str,
+    bullets: list[str],
+    accent: str,
+) -> None:
+    title_font = _load_font(58, bold=True)
+    _draw_text_lines(draw, _wrap_lines(heading, title_font, 1000)[:2], (72, 168), title_font, INK, 16)
+    tile_font = _load_font(24, bold=True)
+    tile_y = 386
+    tile_w = 340
+    for offset, bullet in enumerate((bullets or ["Key point"])[:3]):
+        x0 = 72 + offset * 378
+        draw.rounded_rectangle((x0, tile_y, x0 + tile_w, tile_y + 118), radius=26, fill="#FFFFFF", outline="#DADAE0", width=1)
+        draw.rounded_rectangle((x0 + 24, tile_y + 26, x0 + 30, tile_y + 92), radius=3, fill=accent)
+        lines = _wrap_limited_lines(str(bullet), tile_font, tile_w - 72, 2)
+        _draw_text_lines(draw, lines, (x0 + 52, tile_y + 30), tile_font, SECONDARY, 8)
 
 
 def _write_template_slide_image(path: Path, scene: dict, index: int, total: int, video_title: str) -> None:
     kind = _scene_kind(scene, index, total)
     accent, soft, label = _kind_style(kind)
-    image = Image.new("RGB", (1280, 720), PAPER)
+    image = Image.new("RGBA", (1280, 720), PAPER)
     draw = ImageDraw.Draw(image)
+    _draw_keynote_background(image, draw, accent)
     _draw_header(draw, index, total, kind, accent, label, video_title)
 
     heading = _safe_text(scene.get("heading") or "Untitled scene")
     bullets = _scene_bullets(scene)
 
-    draw.rounded_rectangle((72, 160, 1208, 540), radius=18, fill=PANEL, outline=LINE, width=2)
-    draw.rectangle((72, 160, 90, 540), fill=soft)
-    y = _draw_title(draw, heading, 118, 198, 980) + 30
-    _draw_bullets(draw, bullets, 124, y, 980, accent, font_size=31, limit=4)
+    if index == total or kind == "takeaway":
+        _draw_takeaway_layout(draw, heading, bullets, accent, index)
+    elif index % 3 == 0:
+        _draw_tiles_layout(draw, heading, bullets, accent)
+    else:
+        _draw_focus_layout(draw, heading, bullets, accent)
 
     _draw_subtitle(draw, _voiceover_text(scene), accent)
-    image.save(path)
+    image.convert("RGB").save(path)
 
 
 def _write_ai_fallback_slide_image(path: Path, scene: dict, index: int, total: int, video_title: str) -> None:
-    image = Image.new("RGB", (1280, 720), "#F7F3EA")
+    image = Image.new("RGBA", (1280, 720), PAPER)
     draw = ImageDraw.Draw(image)
-    accent = "#3949AB"
+    accent = BLUE
+    _draw_keynote_background(image, draw, accent)
     _draw_header(draw, index, total, "scene", accent, "Scene", video_title)
 
     heading = _safe_text(scene.get("heading") or "Untitled scene")
     bullets = _scene_bullets(scene)
-    draw.rounded_rectangle((72, 160, 1208, 540), radius=18, fill="#FFFFFF", outline=LINE, width=2)
-    y = _draw_title(draw, heading, 116, 198, 990) + 28
-    _draw_bullets(draw, bullets, 122, y, 940, accent, font_size=30, limit=5)
+    _draw_focus_layout(draw, heading, bullets, accent)
     _draw_subtitle(draw, _voiceover_text(scene), accent)
-    image.save(path)
+    image.convert("RGB").save(path)
 
 
 def _write_slide_image(

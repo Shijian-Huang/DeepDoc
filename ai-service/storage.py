@@ -32,6 +32,20 @@ def save_analysis(filename: str, result: dict) -> dict:
     return record
 
 
+def update_analysis_result(analysis_id: str, result: dict) -> Optional[dict]:
+    record = get_analysis(analysis_id)
+    if not record:
+        return None
+
+    result["analysis_id"] = analysis_id
+    record["result"] = result
+    record["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    record_path = DATA_DIR / f"{analysis_id}.json"
+    record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return record
+
+
 def list_analyses() -> list[dict]:
     _ensure_data_dir()
     analyses: list[dict] = []
@@ -75,6 +89,20 @@ def get_analysis(analysis_id: str) -> Optional[dict]:
     except json.JSONDecodeError:
         return None
 
+
+def delete_analysis(analysis_id: str) -> bool:
+    _ensure_data_dir()
+    if not ANALYSIS_ID_RE.match(analysis_id):
+        return False
+
+    record_path = DATA_DIR / f"{analysis_id}.json"
+    if not record_path.exists():
+        return False
+
+    record_path.unlink()
+    return True
+
+
 def save_video_script(analysis_id: str, video_script: dict) -> Optional[dict]:
     record = get_analysis(analysis_id)
     if not record:
@@ -83,6 +111,7 @@ def save_video_script(analysis_id: str, video_script: dict) -> Optional[dict]:
     result = record.setdefault("result", {})
     result["video_script"] = video_script
     result["video_script_generated_at"] = datetime.now(timezone.utc).isoformat()
+    result.pop("video", None)
 
     record_path = DATA_DIR / f"{analysis_id}.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")

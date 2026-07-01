@@ -4,48 +4,87 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeepDoc</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=reanalysis-versioned-20260701" />
   </head>
   <body>
     <main class="app-shell">
       <section class="workspace">
         <header class="topbar">
           <div class="brand-lockup">
-            <h1>DeepDoc</h1>
-            <p class="hero-subtitle">Research PDF analysis</p>
+            <h1 id="brandHomeButton" tabindex="0">DeepDoc</h1>
+            <p>Read the paper, inspect the evidence, and turn analysis into slides.</p>
           </div>
-          <a class="docs-link" href="/docs">API Docs</a>
+          <div class="topbar-actions">
+            <button id="openHistoryButton" class="ghost-button" type="button">History</button>
+            <a class="docs-link" href="/docs">API Docs</a>
+          </div>
         </header>
 
         <section class="tool-surface" aria-label="PDF analysis controls">
-          <form id="uploadForm" class="upload-form">
-            <label class="drop-zone" for="pdfFile">
-              <input id="pdfFile" name="file" type="file" accept="application/pdf" required />
-              <span class="drop-icon">PDF</span>
-              <span class="drop-title" id="fileLabel">Choose a PDF</span>
-              <span class="drop-meta">Maximum usefulness comes from text-based research papers.</span>
-            </label>
+          <div class="source-tabs" role="tablist" aria-label="Paper source">
+            <button class="source-tab active" type="button" data-source-tab="upload">Upload PDF</button>
+            <button class="source-tab" type="button" data-source-tab="arxiv">Search arXiv</button>
+          </div>
 
-            <fieldset class="mode-group">
-              <legend>Summary mode</legend>
-              <label>
-                <input type="radio" name="summaryMode" value="paragraph" />
-                <span>Paragraph</span>
+          <div class="source-panel active" data-source-panel="upload">
+            <form id="uploadForm" class="upload-form">
+              <label class="drop-zone" for="pdfFile">
+                <input id="pdfFile" name="file" type="file" accept="application/pdf" required />
+                <span class="drop-icon">PDF</span>
+                <span class="drop-title" id="fileLabel">Choose a PDF</span>
+                <span class="drop-meta">Maximum usefulness comes from text-based research papers.</span>
               </label>
-              <label>
-                <input type="radio" name="summaryMode" value="standard" checked />
-                <span>Standard</span>
-              </label>
-              <label>
-                <input type="radio" name="summaryMode" value="one_page" />
-                <span>One page</span>
-              </label>
-            </fieldset>
 
-            <button id="analyzeButton" class="primary-button" type="submit">
-              Analyze PDF
-            </button>
-          </form>
+              <fieldset class="mode-group">
+                <legend>Summary mode</legend>
+                <label>
+                  <input type="radio" name="summaryMode" value="paragraph" />
+                  <span>Paragraph</span>
+                </label>
+                <label>
+                  <input type="radio" name="summaryMode" value="standard" checked />
+                  <span>Standard</span>
+                </label>
+                <label>
+                  <input type="radio" name="summaryMode" value="one_page" />
+                  <span>One page</span>
+                </label>
+              </fieldset>
+
+              <button id="analyzeButton" class="analyze-button" type="submit" aria-live="polite">
+                Analyze
+              </button>
+            </form>
+          </div>
+
+          <div class="source-panel" data-source-panel="arxiv">
+            <form id="arxivSearchForm" class="arxiv-search-form">
+              <label class="arxiv-query">
+                <span>Search arXiv</span>
+                <input id="arxivQuery" type="search" placeholder="large language model summarization" autocomplete="off" />
+              </label>
+              <label class="compact-select">
+                <span>Results</span>
+                <select id="arxivMaxResults">
+                  <option value="5">5</option>
+                  <option value="10" selected>10</option>
+                  <option value="15">15</option>
+                  <option value="25">25</option>
+                </select>
+              </label>
+              <label class="compact-select">
+                <span>Summary</span>
+                <select id="arxivSummaryMode">
+                  <option value="paragraph">Paragraph</option>
+                  <option value="standard" selected>Standard</option>
+                  <option value="one_page">One page</option>
+                </select>
+              </label>
+              <button id="arxivSearchButton" class="ghost-button compact-action" type="submit">Search</button>
+            </form>
+            <div id="arxivSearchStatus" class="result-meta arxiv-search-status"></div>
+            <div id="arxivResults" class="arxiv-results"></div>
+          </div>
         </section>
 
         <section id="statusPanel" class="status-panel" hidden>
@@ -53,21 +92,39 @@
           <p id="statusText">Analyzing paper...</p>
         </section>
 
-        <section id="resultPanel" class="result-panel empty-state">
-          <div class="empty-copy">
-            <p class="eyebrow">Ready</p>
-            <h2>Upload a paper to generate a structured analysis.</h2>
-          </div>
-        </section>
+        <section id="resultPanel" class="result-panel empty-state"></section>
       </section>
 
-      <aside class="history-panel" aria-label="Analysis history">
+      <button id="historyOverlay" class="history-overlay" type="button" aria-label="Close history" hidden></button>
+      <aside id="historyPanel" class="history-panel" aria-label="Analysis history" aria-hidden="true">
         <div class="history-header">
           <div>
             <p class="eyebrow">History</p>
             <h2>Recent Analyses</h2>
           </div>
-          <button id="refreshHistoryButton" class="ghost-button" type="button">Refresh</button>
+          <div class="history-header-actions">
+            <button id="refreshHistoryButton" class="ghost-button" type="button">Refresh</button>
+            <button id="closeHistoryButton" class="ghost-button icon-button" type="button" aria-label="Close history">×</button>
+          </div>
+        </div>
+        <div class="history-controls" aria-label="History search and filters">
+          <label class="history-search">
+            <span>Search history</span>
+            <input id="historySearch" type="search" placeholder="Title, file, summary..." autocomplete="off" />
+          </label>
+          <label class="history-filter">
+            <span>Filter</span>
+            <select id="historyModeFilter">
+              <option value="all">All modes</option>
+              <option value="paragraph">Paragraph</option>
+              <option value="standard">Standard</option>
+              <option value="one_page">One page</option>
+            </select>
+          </label>
+          <label class="history-date">
+            <span>Date</span>
+            <input id="historyDateFilter" type="date" />
+          </label>
         </div>
         <div id="historyList" class="history-list"></div>
       </aside>
@@ -80,72 +137,109 @@
           <h2 data-field="title">Analysis Result</h2>
           <p class="result-meta" data-field="meta"></p>
         </div>
-        <a class="download-button" data-field="download" href="#">Download JSON</a>
+        <div class="result-actions">
+          <button class="ghost-button compact-action" type="button" data-field="reanalyze">Reanalyze as New</button>
+          <span class="pdf-status-pill" data-field="pdfStatus">PDF loading</span>
+          <details class="download-menu">
+            <summary class="download-button">Download</summary>
+            <div class="download-menu-list">
+              <a data-field="downloadPdf" href="#" download hidden>PDF</a>
+              <a data-field="downloadMarkdown" href="#" download>Analysis Markdown</a>
+              <a data-field="download" href="#" download>Analysis JSON</a>
+              <a data-field="downloadSlidesHtml" href="#" download hidden>Slides HTML</a>
+              <a data-field="downloadSlides" href="#" download hidden>Slides Markdown</a>
+              <a data-field="downloadScript" href="#" download hidden>Slides JSON</a>
+              <a data-field="downloadVideo" href="#" download hidden>MP4 Video</a>
+            </div>
+          </details>
+        </div>
       </div>
 
-      <div class="tabs" role="tablist">
-        <button class="tab-button active" type="button" data-tab="summary">Summary</button>
-        <button class="tab-button" type="button" data-tab="evidence">Evidence</button>
-        <button class="tab-button" type="button" data-tab="references">References</button>
-        <button class="tab-button" type="button" data-tab="video">Video Script</button>
-      </div>
-
-      <section class="tab-panel active" data-panel="summary">
-        <article class="summary-block">
-          <h3>Document Summary</h3>
-          <p data-field="summary"></p>
-        </article>
-        <div class="summary-grid">
-          <article>
-            <h3>Key Ideas</h3>
-            <ul data-field="keyIdeas"></ul>
-          </article>
-          <article>
-            <h3>Contributions</h3>
-            <ul data-field="contributions"></ul>
-          </article>
-        </div>
-      </section>
-
-      <section class="tab-panel" data-panel="evidence">
-        <div class="evidence-layout">
-          <article>
-            <h3>Claim Evidence</h3>
-            <div data-field="evidence"></div>
-          </article>
-          <article>
-            <h3>Source Sections</h3>
-            <div data-field="sources"></div>
-          </article>
-        </div>
-      </section>
-
-      <section class="tab-panel" data-panel="references">
-        <article>
-          <h3>References</h3>
-          <ol data-field="references"></ol>
-        </article>
-      </section>
-
-      <section class="tab-panel" data-panel="video">
-        <article class="video-script-panel">
-          <div class="video-script-header">
-            <div>
-              <h3>Video Script</h3>
-              <p class="result-meta">Generate a narrated slide outline from this analysis.</p>
-            </div>
-            <div class="video-actions">
-              <button class="primary-button" type="button" data-field="generateVideoScript">Generate Script</button>
-              <button class="ghost-button" type="button" data-field="generateVideo">Generate Video</button>
-              <a class="download-button muted-download" data-field="downloadVideo" href="#" hidden>Download MP4</a>
-            </div>
+      <div class="reading-layout">
+        <div class="analysis-column">
+          <div class="tabs" role="tablist">
+            <button class="tab-button active" type="button" data-tab="summary">Summary</button>
+            <button class="tab-button" type="button" data-tab="evidence">Evidence</button>
+            <button class="tab-button" type="button" data-tab="references">References</button>
+            <button class="tab-button" type="button" data-tab="video">Slides</button>
           </div>
-          <div data-field="videoStatus" class="result-meta"></div>
-          <div data-field="videoScript"></div>
-        </article>
-      </section>
+
+          <section class="tab-panel active" data-panel="summary">
+            <article class="summary-block">
+              <h3>Document Summary</h3>
+              <p data-field="summary"></p>
+            </article>
+            <div class="summary-grid">
+              <article>
+                <h3>Key Ideas</h3>
+                <ol data-field="keyIdeas"></ol>
+              </article>
+              <article>
+                <h3>Contributions</h3>
+                <ol data-field="contributions"></ol>
+              </article>
+            </div>
+            <div class="optional-analysis-grid" data-field="optionalEvidenceSections"></div>
+          </section>
+
+          <section class="tab-panel" data-panel="evidence">
+            <div class="evidence-layout">
+              <article>
+                <h3>Claim Evidence</h3>
+                <div data-field="evidence"></div>
+              </article>
+              <article>
+                <h3>Source Sections</h3>
+                <div data-field="sources"></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="tab-panel" data-panel="references">
+            <article>
+              <h3>References</h3>
+              <ol data-field="references"></ol>
+            </article>
+          </section>
+
+          <section class="tab-panel" data-panel="video">
+            <article class="video-script-panel">
+              <div class="video-script-header">
+                <div>
+                  <h3>Slides</h3>
+                  <p class="result-meta">Generate a slide outline, then optionally create a narrated MP4.</p>
+                </div>
+              </div>
+              <div class="video-control-bar">
+                <label class="slide-count-control">
+                  <span>Length</span>
+                  <select data-field="slideCount">
+                    <option value="5">5 Brief</option>
+                    <option value="8">8 Balanced</option>
+                    <option value="10" selected>10 Deep dive</option>
+                    <option value="15">15 Lecture</option>
+                  </select>
+                </label>
+                <div class="video-actions">
+                  <button class="primary-button compact-action" type="button" data-field="generateVideoScript">Generate Slides</button>
+                  <button class="ghost-button compact-action" type="button" data-field="generateVideo">Create MP4</button>
+                </div>
+              </div>
+              <div data-field="videoStatus" class="result-meta"></div>
+              <div data-field="videoScript"></div>
+            </article>
+          </section>
+        </div>
+
+        <aside class="pdf-panel" data-field="pdfPanel">
+          <iframe data-field="pdfViewer" title="Original PDF viewer"></iframe>
+          <div class="pdf-placeholder" data-field="pdfPlaceholder" hidden>
+            Original PDF is not available for this analysis.
+          </div>
+        </aside>
+      </div>
     </template>
 
-    <script src="/static/app.js?v=paper-title-20260617"></script>
+    <script src="/static/app.js?v=reanalysis-versioned-20260701"></script>
   </body>
 </html>
