@@ -20,10 +20,19 @@ TRAILING_SECTION_RE = re.compile(
 )
 
 APPENDIX_HEADING_RE = re.compile(r"^(appendix|appendices)\b", re.IGNORECASE)
+APPENDIX_LETTER_HEADING_RE = re.compile(r"^[A-Z]\.\s+[A-Z].{4,}$")
 APPENDIX_TITLE_RE = re.compile(r"^[A-Z].{4,}$")
 YEAR_RE = re.compile(r"\b(19|20)\d{2}[a-z]?\b")
 PAGE_NUMBER_RE = re.compile(r"^\d{1,3}$")
 APPENDIX_MARKER_RE = re.compile(r"^[A-Z]$")
+REFERENCE_CONTINUATION_RE = re.compile(
+    r"(?i)^(arxiv|preprint|journal|proceedings|in\s+|pp\.|pages?\b|url\b|doi\b|"
+    r"conference|workshop|transactions|annual review|phd thesis|university\b)"
+)
+PAPER_HEADER_HINT_RE = re.compile(
+    r"(?i)\b(arxiv|proceedings|transactions|conference|workshop|journal|"
+    r"investigating|towards?|toward|learning|model|models|large language model)\b"
+)
 TRAILING_AUTHOR_GIVEN_NAME_RE = re.compile(
     r"^(?P<body>.+?\b(?:19|20)\d{2}[a-z]?(?:[.)]|\b)[^.]*)\.\s+"
     r"(?P<name>[A-Z][a-z]{2,})(?:-[A-Z][A-Za-z]+)?$"
@@ -55,9 +64,24 @@ def extract_reference_section(text: str) -> str:
         ref_text = ref_text[:trailing_match.start()]
 
     raw_lines = ref_text.splitlines()
+    normalized_line_counts: dict[str, int] = {}
+    for raw_line in raw_lines:
+        normalized_line = re.sub(r"\s+", " ", raw_line).strip()
+        if normalized_line:
+            normalized_line_counts[normalized_line] = normalized_line_counts.get(normalized_line, 0) + 1
+
     lines: list[str] = []
     for index, raw_line in enumerate(raw_lines):
         line = raw_line.strip()
+        normalized_line = re.sub(r"\s+", " ", line)
+        if (
+            len(normalized_line) > 30
+            and normalized_line_counts.get(normalized_line, 0) >= 2
+            and PAPER_HEADER_HINT_RE.search(normalized_line)
+            and not YEAR_RE.search(normalized_line)
+            and not re.search(r"\b(URL|doi|arXiv)\b", normalized_line, re.IGNORECASE)
+        ):
+            continue
         if lines and APPENDIX_HEADING_RE.match(line):
             break
         next_line = ""
@@ -65,6 +89,13 @@ def extract_reference_section(text: str) -> str:
             if candidate.strip():
                 next_line = candidate.strip()
                 break
+        if (
+            lines
+            and APPENDIX_LETTER_HEADING_RE.match(line)
+            and not REFERENCE_CONTINUATION_RE.match(next_line)
+            and not YEAR_RE.search(next_line[:80])
+        ):
+            break
         if lines and APPENDIX_MARKER_RE.match(line) and APPENDIX_TITLE_RE.match(next_line):
             break
         lines.append(raw_line)

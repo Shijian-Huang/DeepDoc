@@ -20,18 +20,45 @@ const sourceTabs = document.querySelectorAll("[data-source-tab]");
 const sourcePanels = document.querySelectorAll("[data-source-panel]");
 const arxivSearchForm = document.querySelector("#arxivSearchForm");
 const arxivQueryInput = document.querySelector("#arxivQuery");
+const arxivSearchFieldInput = document.querySelector("#arxivSearchField");
+const arxivCategoryInput = document.querySelector("#arxivCategory");
 const arxivMaxResultsInput = document.querySelector("#arxivMaxResults");
+const arxivSortModeInput = document.querySelector("#arxivSortMode");
 const arxivSummaryModeInput = document.querySelector("#arxivSummaryMode");
 const arxivSearchButton = document.querySelector("#arxivSearchButton");
 const arxivSearchStatus = document.querySelector("#arxivSearchStatus");
 const arxivResults = document.querySelector("#arxivResults");
+const arxivPagination = document.querySelector("#arxivPagination");
+const arxivPrevButton = document.querySelector("#arxivPrevButton");
+const arxivNextButton = document.querySelector("#arxivNextButton");
+const arxivPageInfo = document.querySelector("#arxivPageInfo");
+const popularSearches = document.querySelector("#popularSearches");
+const arxivPlaceholders = [
+  "Search a paper you've always wanted to understand.",
+  "Find the paper behind today's breakthrough.",
+  "Explore ideas, not just titles.",
+  "Start with a question.",
+  "Search by title, author, or topic.",
+];
 
 let historyItems = [];
 let arxivItems = [];
+let arxivSearchState = {
+  query: "",
+  searchField: "all",
+  category: "",
+  maxResults: 20,
+  sortBy: "relevance",
+  sortOrder: "descending",
+  start: 0,
+  page: 1,
+  totalPages: 0,
+  totalResults: 0,
+};
 
 pdfFileInput.addEventListener("change", () => {
   const file = pdfFileInput.files[0];
-  fileLabel.textContent = file ? file.name : "Choose a PDF";
+  fileLabel.textContent = file ? file.name : "Drop a research paper";
 });
 
 uploadForm.addEventListener("submit", async (event) => {
@@ -78,13 +105,19 @@ brandHomeButton.addEventListener("click", returnHome);
 brandHomeButton.addEventListener("keydown", handleBrandHomeKeydown);
 resultPanel.addEventListener("click", handleResultPanelClick);
 resultPanel.addEventListener("click", handleEvidenceNavigation);
+resultPanel.addEventListener("click", handleCopyClick);
 resultPanel.addEventListener("change", handleResultPanelChange);
 sourceTabs.forEach((tab) => tab.addEventListener("click", () => switchSourceTab(tab.dataset.sourceTab)));
 arxivSearchForm.addEventListener("submit", searchArxiv);
 arxivResults.addEventListener("click", handleArxivResultClick);
+arxivPrevButton.addEventListener("click", () => changeArxivPage(-1));
+arxivNextButton.addEventListener("click", () => changeArxivPage(1));
+popularSearches.addEventListener("click", handlePopularSearchClick);
 historySearchInput.addEventListener("input", renderFilteredHistory);
 historyModeFilter.addEventListener("change", renderFilteredHistory);
 historyDateFilter.addEventListener("change", renderFilteredHistory);
+startArxivPlaceholderRotation();
+document.addEventListener("click", closeDownloadMenusOnOutsideClick);
 
 
 function openHistoryDrawer() {
@@ -98,6 +131,15 @@ function closeHistoryDrawer() {
   document.body.classList.remove("is-history-open");
   historyPanel.setAttribute("aria-hidden", "true");
   historyOverlay.hidden = true;
+}
+
+function closeDownloadMenusOnOutsideClick(event) {
+  const activeMenu = event.target.closest(".download-menu");
+  document.querySelectorAll(".download-menu[open]").forEach((menu) => {
+    if (menu !== activeMenu || event.target.closest(".download-menu-list a")) {
+      menu.removeAttribute("open");
+    }
+  });
 }
 
 function handleBrandHomeKeydown(event) {
@@ -123,37 +165,168 @@ function switchSourceTab(source) {
 }
 
 async function searchArxiv(event) {
-  event.preventDefault();
+  if (event) event.preventDefault();
   const query = arxivQueryInput.value.trim();
-  const maxResults = arxivMaxResultsInput.value || "10";
+  const maxResults = Number(arxivMaxResultsInput.value || 20);
+  const searchField = arxivSearchFieldInput.value || "all";
+  const category = arxivCategoryInput.value || "";
+  const {sortBy, sortOrder} = parseArxivSortMode(arxivSortModeInput.value);
   if (!query) {
     arxivSearchStatus.textContent = "Enter a search query.";
     arxivResults.innerHTML = "";
+    resetArxivPagination();
     return;
   }
 
+  arxivSearchState = {
+    query,
+    searchField,
+    category,
+    maxResults,
+    sortBy,
+    sortOrder,
+    start: 0,
+    page: 1,
+    totalPages: 0,
+    totalResults: 0,
+  };
+  popularSearches.hidden = true;
+  await fetchArxivPage();
+}
+
+async function fetchArxivPage() {
   arxivSearchButton.disabled = true;
+  arxivPrevButton.disabled = true;
+  arxivNextButton.disabled = true;
   arxivSearchButton.textContent = "Searching";
   arxivSearchStatus.textContent = "Searching arXiv...";
   arxivResults.innerHTML = "";
 
   try {
-    const response = await fetch(`/arxiv/search?q=${encodeURIComponent(query)}&max_results=${encodeURIComponent(maxResults)}`);
+    const params = new URLSearchParams({
+      q: arxivSearchState.query,
+      max_results: String(arxivSearchState.maxResults),
+      start: String(arxivSearchState.start),
+      search_field: arxivSearchState.searchField,
+      category: arxivSearchState.category,
+      sort_by: arxivSearchState.sortBy,
+      sort_order: arxivSearchState.sortOrder,
+    });
+    const response = await fetch(`/arxiv/search?${params.toString()}`);
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.detail || `arXiv search failed with status ${response.status}`);
     }
     arxivItems = payload.results || [];
+    arxivSearchState = {
+      ...arxivSearchState,
+      start: Number(payload.start || arxivSearchState.start),
+      searchField: payload.search_field || arxivSearchState.searchField,
+      category: payload.category || arxivSearchState.category,
+      maxResults: Number(payload.max_results || arxivSearchState.maxResults),
+      sortBy: payload.sort_by || arxivSearchState.sortBy,
+      sortOrder: payload.sort_order || arxivSearchState.sortOrder,
+      page: Number(payload.page || 1),
+      totalPages: Number(payload.total_pages || 0),
+      totalResults: Number(payload.total_results || 0),
+    };
     renderArxivResults(arxivItems);
-    arxivSearchStatus.textContent = arxivItems.length ? `${arxivItems.length} papers found.` : "No arXiv papers found.";
+    renderArxivPagination();
+    const filterLabel = formatArxivFilterLabel(arxivSearchState);
+    arxivSearchStatus.textContent = arxivItems.length
+      ? `${arxivItems.length} papers shown · ${formatNumber(arxivSearchState.totalResults)} total results · ${filterLabel}`
+      : "No arXiv papers found.";
   } catch (error) {
     arxivItems = [];
     arxivResults.innerHTML = "";
+    resetArxivPagination();
     arxivSearchStatus.textContent = error.message || "arXiv search failed.";
   } finally {
     arxivSearchButton.disabled = false;
     arxivSearchButton.textContent = "Search";
   }
+}
+
+async function changeArxivPage(direction) {
+  if (!arxivSearchState.query) return;
+  const nextStart = Math.max(0, arxivSearchState.start + direction * arxivSearchState.maxResults);
+  if (nextStart === arxivSearchState.start) return;
+  if (arxivSearchState.totalResults && nextStart >= arxivSearchState.totalResults) return;
+  arxivSearchState.start = nextStart;
+  await fetchArxivPage();
+}
+
+function renderArxivPagination() {
+  if (!arxivSearchState.query || (!arxivItems.length && !arxivSearchState.totalResults)) {
+    resetArxivPagination();
+    return;
+  }
+
+  arxivPagination.hidden = false;
+  const totalPages = arxivSearchState.totalPages || Math.max(1, arxivSearchState.page);
+  arxivPageInfo.textContent = `Page ${arxivSearchState.page}${totalPages ? ` of ${totalPages}` : ""}`;
+  arxivPrevButton.disabled = arxivSearchState.start <= 0;
+  const nextStart = arxivSearchState.start + arxivSearchState.maxResults;
+  arxivNextButton.disabled = arxivSearchState.totalResults
+    ? nextStart >= arxivSearchState.totalResults
+    : arxivItems.length < arxivSearchState.maxResults;
+}
+
+function resetArxivPagination() {
+  arxivPagination.hidden = true;
+  arxivPageInfo.textContent = "Page 1";
+  arxivPrevButton.disabled = true;
+  arxivNextButton.disabled = true;
+}
+
+function handlePopularSearchClick(event) {
+  const button = event.target.closest("[data-popular-query]");
+  if (!button) return;
+  arxivQueryInput.value = button.dataset.popularQuery || "";
+  searchArxiv();
+}
+
+function startArxivPlaceholderRotation() {
+  let index = 0;
+  arxivQueryInput.placeholder = arxivPlaceholders[index];
+  window.setInterval(() => {
+    if (document.activeElement === arxivQueryInput || arxivQueryInput.value.trim()) return;
+    index = (index + 1) % arxivPlaceholders.length;
+    arxivQueryInput.placeholder = arxivPlaceholders[index];
+  }, 3600);
+}
+
+function formatArxivFilterLabel(state) {
+  const fieldLabels = {
+    all: "all fields",
+    title: "title",
+    author: "author",
+    abstract: "abstract",
+  };
+  const sortLabel = formatArxivSortLabel(state.sortBy, state.sortOrder);
+  const category = state.category ? ` · ${state.category}` : "";
+  return `${fieldLabels[state.searchField] || "all fields"}${category} · ${sortLabel}`;
+}
+
+function parseArxivSortMode(value) {
+  const sortModes = {
+    "relevance-desc": {sortBy: "relevance", sortOrder: "descending"},
+    "submittedDate-desc": {sortBy: "submittedDate", sortOrder: "descending"},
+    "submittedDate-asc": {sortBy: "submittedDate", sortOrder: "ascending"},
+    "lastUpdatedDate-desc": {sortBy: "lastUpdatedDate", sortOrder: "descending"},
+    "lastUpdatedDate-asc": {sortBy: "lastUpdatedDate", sortOrder: "ascending"},
+  };
+  return sortModes[value] || sortModes["relevance-desc"];
+}
+
+function formatArxivSortLabel(sortBy, sortOrder) {
+  if (sortBy === "submittedDate") {
+    return sortOrder === "ascending" ? "oldest submitted" : "newest submitted";
+  }
+  if (sortBy === "lastUpdatedDate") {
+    return sortOrder === "ascending" ? "oldest updated" : "recently updated";
+  }
+  return "best match";
 }
 
 function renderArxivResults(items) {
@@ -164,18 +337,19 @@ function renderArxivResults(items) {
     const card = document.createElement("article");
     card.className = "arxiv-card";
     const authors = Array.isArray(item.authors) ? item.authors.join(", ") : "";
-    const categories = Array.isArray(item.categories) ? item.categories.slice(0, 4).join(" · ") : "";
+    const categories = Array.isArray(item.categories) ? item.categories.slice(0, 3).join(" · ") : "";
+    const metadata = [categories, item.published || "date unavailable"].filter(Boolean).join(" • ");
     card.innerHTML = `
       <div>
-        <p class="card-meta">${escapeHtml(item.published || "date unavailable")}${categories ? ` · ${escapeHtml(categories)}` : ""}</p>
+        <p class="card-meta">${escapeHtml(metadata)}</p>
         <h3>${escapeHtml(item.title || "Untitled arXiv paper")}</h3>
-        <p class="result-meta">${escapeHtml(trimText(authors, 180))}</p>
-        <p>${escapeHtml(trimText(item.summary || "", 360))}</p>
+        <p class="result-meta arxiv-authors">${escapeHtml(trimText(authors, 220))}</p>
+        <p class="arxiv-abstract">${escapeHtml(item.summary || "")}</p>
       </div>
       <div class="arxiv-card-actions">
-        <a href="${escapeAttribute(item.abs_url || "#")}" target="_blank" rel="noreferrer">arXiv</a>
+        <button class="arxiv-analyze" type="button" data-arxiv-index="${index}">Analyze</button>
         <a href="${escapeAttribute(item.pdf_url || "#")}" target="_blank" rel="noreferrer">PDF</a>
-        <button type="button" data-arxiv-index="${index}">Analyze</button>
+        <a href="${escapeAttribute(item.abs_url || "#")}" target="_blank" rel="noreferrer">arXiv</a>
       </div>
     `;
     arxivResults.appendChild(card);
@@ -201,6 +375,11 @@ async function handleArxivResultClick(event) {
         arxiv_id: item.arxiv_id,
         pdf_url: item.pdf_url,
         summary_mode: summaryMode,
+        title: item.title || "",
+        authors: Array.isArray(item.authors) ? item.authors : [],
+        published: item.published || "",
+        updated: item.updated || "",
+        categories: Array.isArray(item.categories) ? item.categories : [],
       }),
     });
     const payload = await response.json();
@@ -223,6 +402,25 @@ function handleResultPanelClick(event) {
   const reanalyzeButton = event.target.closest('[data-field="reanalyze"]');
   const scriptButton = event.target.closest('[data-field="generateVideoScript"]');
   const videoButton = event.target.closest('[data-field="generateVideo"]');
+  const overviewToggle = event.target.closest('[data-field="toggleOverview"]');
+  const listToggle = event.target.closest("[data-list-toggle]");
+  const referenceToggle = event.target.closest("[data-reference-toggle]");
+
+  if (overviewToggle) {
+    toggleOverview(overviewToggle);
+    return;
+  }
+
+  if (listToggle) {
+    toggleList(listToggle);
+    return;
+  }
+
+  if (referenceToggle) {
+    toggleReference(referenceToggle);
+    return;
+  }
+
   if (!reanalyzeButton && !scriptButton && !videoButton) return;
 
   const analysisId = resultPanel.dataset.analysisId;
@@ -247,6 +445,25 @@ function handleResultPanelClick(event) {
   if (videoButton) {
     generateVideo(analysisId, videoContainer, videoStatus, downloadVideoLink, videoButton, slideCountControl);
   }
+}
+
+function toggleOverview(button) {
+  const card = button.closest(".summary-block");
+  const expanded = card?.classList.toggle("is-expanded");
+  button.textContent = expanded ? "Show less" : "Show full summary";
+}
+
+function toggleList(button) {
+  const card = button.closest("article");
+  const expanded = card?.classList.toggle("is-expanded");
+  const list = card?.querySelector("ol, ul");
+  const limit = 5;
+  if (list) {
+    [...list.children].forEach((item, index) => {
+      item.hidden = !expanded && index >= limit;
+    });
+  }
+  button.textContent = expanded ? "View less" : `View all ${button.dataset.hiddenCount || ""}`.trim();
 }
 
 async function reanalyzeExistingAnalysis(analysisId, button) {
@@ -283,7 +500,7 @@ function setBusy(isBusy, message = "") {
   analyzeButton.disabled = isBusy;
   analyzeButton.classList.toggle("is-loading", isBusy);
   analyzeButton.setAttribute("aria-busy", String(isBusy));
-  analyzeButton.textContent = "Analyze";
+  analyzeButton.textContent = "Analyze Paper";
   statusText.textContent = message;
   statusPanel.hidden = !isBusy;
 }
@@ -308,11 +525,14 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
   const summary = result.document_summary || {};
   const analysisId = result.analysis_id;
   const paperTitle = result.paper_title || summary.title || result.video_script?.title || fallbackFilename;
+  const summaryText = summary.summary || "No summary returned.";
 
   node.querySelector('[data-field="mode"]').textContent = formatMode(result.summary_mode);
   node.querySelector('[data-field="title"]').textContent = paperTitle;
   node.querySelector('[data-field="meta"]').textContent = formatMeta(result);
-  node.querySelector('[data-field="summary"]').textContent = summary.summary || "No summary returned.";
+  node.querySelector('[data-field="summary"]').textContent = summaryText;
+  node.querySelector('[data-field="overviewMeta"]').textContent = formatOverviewMeta(result, summaryText);
+  renderPaperInfo(node.querySelector('[data-field="paperInfo"]'), result, fallbackFilename);
 
   const download = node.querySelector('[data-field="download"]');
   const downloadMarkdown = node.querySelector('[data-field="downloadMarkdown"]');
@@ -329,8 +549,8 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
   }
   renderPdfViewer(node, analysisId);
 
-  renderList(node.querySelector('[data-field="keyIdeas"]'), summary.key_ideas || []);
-  renderList(node.querySelector('[data-field="contributions"]'), summary.contributions || []);
+  renderList(node.querySelector('[data-field="keyIdeas"]'), summary.key_ideas || [], {variant: "ideas", limit: 5});
+  renderList(node.querySelector('[data-field="contributions"]'), summary.contributions || [], {variant: "contributions", limit: 5});
   renderOptionalEvidenceSections(node.querySelector('[data-field="optionalEvidenceSections"]'), summary);
   renderEvidenceViewer(node.querySelector('[data-field="evidence"]'), summary.evidence || [], {
     emptyText: "No evidence claims returned.",
@@ -371,16 +591,14 @@ function renderPdfViewer(root, analysisId) {
   const panel = root.querySelector('[data-field="pdfPanel"]');
   const viewer = root.querySelector('[data-field="pdfViewer"]');
   const placeholder = root.querySelector('[data-field="pdfPlaceholder"]');
-  const status = root.querySelector('[data-field="pdfStatus"]');
   const downloadPdf = root.querySelector('[data-field="downloadPdf"]');
-  if (!panel || !viewer || !placeholder || !status) return;
+  if (!panel || !viewer || !placeholder) return;
 
   if (!analysisId) {
     panel.dataset.pdfBaseUrl = "";
     viewer.hidden = true;
     viewer.removeAttribute("src");
     placeholder.hidden = false;
-    status.textContent = "Unavailable";
     if (downloadPdf) {
       downloadPdf.hidden = true;
       downloadPdf.removeAttribute("href");
@@ -394,22 +612,20 @@ function renderPdfViewer(root, analysisId) {
   viewer.removeAttribute("src");
   placeholder.hidden = false;
   placeholder.textContent = "Checking original PDF...";
-    status.textContent = "Loading";
   if (downloadPdf) {
     downloadPdf.hidden = true;
     downloadPdf.removeAttribute("href");
   }
-  checkPdfAvailability(viewer, placeholder, status, pdfUrl, downloadPdf);
+  checkPdfAvailability(viewer, placeholder, pdfUrl, downloadPdf);
 }
 
-async function checkPdfAvailability(viewer, placeholder, status, pdfUrl, downloadPdf) {
+async function checkPdfAvailability(viewer, placeholder, pdfUrl, downloadPdf) {
   try {
     const response = await fetch(pdfUrl, {method: "HEAD"});
     if (!response.ok) throw new Error("PDF unavailable");
     viewer.hidden = false;
     viewer.src = pdfViewerUrl(pdfUrl, 1);
     placeholder.hidden = true;
-    status.textContent = "Page 1";
     if (downloadPdf) {
       downloadPdf.href = pdfUrl;
       downloadPdf.hidden = false;
@@ -420,7 +636,6 @@ async function checkPdfAvailability(viewer, placeholder, status, pdfUrl, downloa
     viewer.removeAttribute("src");
     placeholder.hidden = false;
     placeholder.textContent = "Original PDF is not available for this analysis.";
-    status.textContent = "Unavailable";
     if (downloadPdf) {
       downloadPdf.hidden = true;
       downloadPdf.removeAttribute("href");
@@ -439,15 +654,12 @@ function navigateToEvidencePage(page, activeEvidenceItem = null) {
   const panel = resultPanel.querySelector('[data-field="pdfPanel"]');
   const viewer = resultPanel.querySelector('[data-field="pdfViewer"]');
   const placeholder = resultPanel.querySelector('[data-field="pdfPlaceholder"]');
-  const status = resultPanel.querySelector('[data-field="pdfStatus"]');
   const pdfUrl = panel?.dataset.pdfBaseUrl || "";
 
   if (!page) {
-    if (status) status.textContent = "No page number";
     return;
   }
   if (!pdfUrl || !viewer) {
-    if (status) status.textContent = "PDF unavailable";
     if (placeholder) {
       placeholder.hidden = false;
       placeholder.textContent = "PDF navigation is unavailable for this analysis.";
@@ -462,7 +674,6 @@ function navigateToEvidencePage(page, activeEvidenceItem = null) {
     viewer.src = pdfViewerUrl(pdfUrl, page);
   });
   if (placeholder) placeholder.hidden = true;
-  if (status) status.textContent = `Page ${page}`;
   markActiveEvidence(activeEvidenceItem);
 }
 
@@ -487,9 +698,11 @@ async function generateVideo(analysisId, scriptContainer, statusContainer, downl
   }
 
   button.disabled = true;
+  button.dataset.busy = "true";
   button.textContent = "Generating...";
   statusContainer.textContent = `Generating ${selectedSlideCount}-slide MP4 locally...`;
   clearDownloadLink(downloadLink);
+  let videoGenerated = false;
 
   try {
     const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}/video`, {
@@ -502,12 +715,15 @@ async function generateVideo(analysisId, scriptContainer, statusContainer, downl
     }
 
     renderVideoResult(statusContainer, downloadLink, payload.video);
+    videoGenerated = true;
     await loadHistory();
   } catch (error) {
     statusContainer.textContent = error.message || "Video generation failed.";
   } finally {
+    delete button.dataset.busy;
     button.disabled = false;
-    button.textContent = "Create MP4";
+    button.textContent = "Generate MP4";
+    if (videoGenerated) updateVideoArtifactAvailability(resultPanel);
   }
 }
 
@@ -558,6 +774,12 @@ function renderVideoResult(statusContainer, downloadLink, video) {
   downloadLink.hidden = false;
 }
 
+function setArtifactState(element, text, state = "idle") {
+  if (!element) return;
+  element.textContent = text;
+  element.dataset.state = state;
+}
+
 function clearDownloadLink(downloadLink) {
   if (!downloadLink) return;
   downloadLink.hidden = true;
@@ -566,7 +788,7 @@ function clearDownloadLink(downloadLink) {
   delete downloadLink.dataset.generatedAt;
 }
 
-function updateVideoArtifactAvailability(root) {
+function updateVideoArtifactAvailability(root, options = {}) {
   const slideCountControl = root.querySelector('[data-field="slideCount"]');
   const selectedSlideCount = selectedSlides(slideCountControl);
   const scriptContainer = root.querySelector('[data-field="videoScript"]');
@@ -575,27 +797,62 @@ function updateVideoArtifactAvailability(root) {
   const downloadSlidesLink = root.querySelector('[data-field="downloadSlides"]');
   const downloadSlidesHtmlLink = root.querySelector('[data-field="downloadSlidesHtml"]');
   const downloadVideoLink = root.querySelector('[data-field="downloadVideo"]');
+  const slidesState = root.querySelector('[data-field="slidesState"]');
+  const mp4State = root.querySelector('[data-field="mp4State"]');
+  const scriptButton = root.querySelector('[data-field="generateVideoScript"]');
+  const videoButton = root.querySelector('[data-field="generateVideo"]');
   const scriptSlides = Number(scriptContainer?.dataset.slideCount || 0);
   const videoSlides = Number(downloadVideoLink?.dataset.slideCount || 0);
+  const selectedScriptReady = scriptSlides && scriptSlides === selectedSlideCount;
+  const selectedVideoReady = videoSlides && videoSlides === selectedSlideCount && selectedScriptReady;
 
   if (downloadScriptLink) {
-    downloadScriptLink.hidden = !scriptSlides || scriptSlides !== selectedSlideCount;
+    downloadScriptLink.hidden = !selectedScriptReady;
   }
   if (downloadSlidesLink) {
-    downloadSlidesLink.hidden = !scriptSlides || scriptSlides !== selectedSlideCount;
+    downloadSlidesLink.hidden = !selectedScriptReady;
   }
   if (downloadSlidesHtmlLink) {
-    downloadSlidesHtmlLink.hidden = !scriptSlides || scriptSlides !== selectedSlideCount;
+    downloadSlidesHtmlLink.hidden = !selectedScriptReady;
   }
   if (downloadVideoLink) {
-    downloadVideoLink.hidden = !videoSlides || videoSlides !== selectedSlideCount || scriptSlides !== selectedSlideCount;
+    downloadVideoLink.hidden = !selectedVideoReady;
+  }
+
+  if (selectedScriptReady) {
+    setArtifactState(slidesState, `Slides ready · ${scriptSlides}`, "ready");
+  } else if (scriptSlides) {
+    setArtifactState(slidesState, `Slides ready · ${scriptSlides}, need ${selectedSlideCount}`, "stale");
+  } else {
+    setArtifactState(slidesState, `Need ${selectedSlideCount}-slide slides`, "idle");
+  }
+
+  if (selectedVideoReady) {
+    setArtifactState(mp4State, `MP4 ready · ${videoSlides}`, "ready");
+  } else if (videoSlides) {
+    setArtifactState(mp4State, `MP4 ready · ${videoSlides}, need ${selectedSlideCount}`, "stale");
+  } else if (selectedScriptReady) {
+    setArtifactState(mp4State, "MP4 not generated", "idle");
+  } else {
+    setArtifactState(mp4State, "Create slides first", "blocked");
+  }
+
+  if (scriptButton && scriptButton.dataset.busy !== "true") {
+    scriptButton.textContent = selectedScriptReady ? "Regenerate Slides" : `Generate ${selectedSlideCount} Slides`;
+  }
+  if (videoButton && videoButton.dataset.busy !== "true") {
+    videoButton.textContent = selectedVideoReady ? "Regenerate Narrated MP4" : "Generate Narrated MP4";
+  }
+
+  if (options.preserveStatus) {
+    return;
   }
 
   if (statusContainer && scriptSlides && scriptSlides !== selectedSlideCount) {
     statusContainer.textContent = `Current script is ${scriptSlides} slides. Generate a ${selectedSlideCount}-slide script to update downloads.`;
-  } else if (statusContainer && scriptSlides === selectedSlideCount && videoSlides === selectedSlideCount) {
+  } else if (statusContainer && selectedVideoReady) {
     statusContainer.textContent = `Generated ${videoSlides}-slide video at ${formatDate(downloadVideoLink.dataset.generatedAt)}.`;
-  } else if (statusContainer && scriptSlides === selectedSlideCount) {
+  } else if (statusContainer && selectedScriptReady) {
     statusContainer.textContent = `Slides ready: ${scriptSlides} slides. Create an MP4 for this version when ready.`;
   } else if (statusContainer) {
     statusContainer.textContent = "Generate slides first, then download Markdown or optionally create an MP4.";
@@ -606,6 +863,7 @@ async function generateVideoScript(analysisId, container, button, slideCountCont
   const statusContainer = resultPanel.querySelector('[data-field="videoStatus"]');
   const slideCount = selectedSlides(slideCountControl);
   button.disabled = true;
+  button.dataset.busy = "true";
   button.textContent = "Generating";
   if (slideCountControl) slideCountControl.disabled = true;
   clearDownloadLink(downloadScriptLink);
@@ -615,6 +873,7 @@ async function generateVideoScript(analysisId, container, button, slideCountCont
   if (statusContainer) statusContainer.textContent = `Generating ${slideCount} slides with Gemini...`;
   container.dataset.slideCount = "";
   container.innerHTML = `<p class="result-meta">Creating ${escapeHtml(slideCount)} slides...</p>`;
+  let slidesGenerated = false;
 
   try {
     const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}/video-script?slide_count=${encodeURIComponent(slideCount)}`, {
@@ -630,15 +889,18 @@ async function generateVideoScript(analysisId, container, button, slideCountCont
     renderVideoScriptDownload(downloadScriptLink, downloadSlidesLink, downloadSlidesHtmlLink, analysisId, payload.video_script);
     syncSlideCount(slideCountControl, payload.video_script);
     if (statusContainer) statusContainer.textContent = `Slides generated: ${payload.video_script?.scenes?.length || slideCount} slides. Create MP4 for this version when ready.`;
+    slidesGenerated = true;
     await loadHistory();
   } catch (error) {
     const message = error.message || "Video script failed.";
     if (statusContainer) statusContainer.textContent = message;
     container.innerHTML = `<p class="result-meta">${escapeHtml(message)}</p>`;
   } finally {
+    delete button.dataset.busy;
     button.disabled = false;
     if (slideCountControl) slideCountControl.disabled = false;
     button.textContent = "Regenerate Slides";
+    updateVideoArtifactAvailability(resultPanel, {preserveStatus: !slidesGenerated});
   }
 }
 
@@ -655,26 +917,37 @@ function renderVideoScript(container, script) {
   const sceneCount = scriptSlideCount(script);
   container.dataset.slideCount = String(sceneCount);
   header.innerHTML = `
-    <strong>${escapeHtml(script.title || "Research explainer")}</strong>
+    <div>
+      <span class="stage-label">Latest Generated Outline</span>
+      <strong>${escapeHtml(script.title || "Research explainer")}</strong>
+    </div>
     <span>${escapeHtml(String(sceneCount))} slides · ${escapeHtml(script.audience || "general audience")}</span>
   `;
   container.appendChild(header);
 
   script.scenes.forEach((scene, index) => {
-    const card = document.createElement("article");
-    card.className = "scene-card";
+    const card = document.createElement("details");
+    card.className = "scene-card slide-preview-card";
     const bullets = Array.isArray(scene.bullets) ? scene.bullets : [];
     card.innerHTML = `
-      <div class="card-meta">Scene ${escapeHtml(scene.scene_number || index + 1)} · ${escapeHtml(scene.role || "scene")}</div>
-      <h4>${escapeHtml(scene.heading || "Untitled scene")}</h4>
-      <ul>${bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>
-      <p><strong>Voiceover:</strong> ${escapeHtml(scene.voiceover || "")}</p>
-      <p class="result-meta"><strong>Visual:</strong> ${escapeHtml(scene.visual_type || "template")} · ${escapeHtml(scene.visual_note || "")}</p>
+      <summary>
+        <span class="slide-number">Slide ${escapeHtml(scene.scene_number || index + 1)}</span>
+        <span class="slide-title">${escapeHtml(scene.heading || "Untitled slide")}</span>
+        <span class="slide-action">Preview</span>
+      </summary>
+      <div class="slide-preview-body">
+        <ul>${bullets.slice(0, 4).map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>
+        <div class="speaker-notes">
+          <strong>Speaker Notes</strong>
+          <p>${escapeHtml(scene.voiceover || "No speaker notes generated.")}</p>
+        </div>
+        <p class="result-meta"><strong>Visual:</strong> ${escapeHtml(scene.visual_type || "template")} · ${escapeHtml(scene.visual_note || "")}</p>
+      </div>
     `;
     if (scene.evidence && typeof scene.evidence === "object") {
-      card.appendChild(createEvidenceItem(scene.evidence, {compact: true}));
+      card.querySelector(".slide-preview-body").appendChild(createEvidenceItem(scene.evidence, {compact: true}));
     } else {
-      card.appendChild(createMissingEvidenceItem("No evidence attached to this scene."));
+      card.querySelector(".slide-preview-body").appendChild(createMissingEvidenceItem("No evidence attached to this slide."));
     }
     container.appendChild(card);
   });
@@ -696,15 +969,18 @@ function selectedSlides(control) {
   return Number(control?.value || 10);
 }
 
-function renderList(container, items) {
+function renderList(container, items, options = {}) {
   container.innerHTML = "";
   if (!items.length) {
     container.appendChild(emptyLine("No items returned."));
     return;
   }
 
-  items.forEach((item) => {
+  items.forEach((item, index) => {
     const li = document.createElement("li");
+    if (options.limit && index >= options.limit) li.hidden = true;
+    if (options.variant) li.dataset.variant = options.variant;
+    if (options.variant === "ideas") li.dataset.index = String(index + 1);
     if (item && typeof item === "object") {
       li.appendChild(document.createTextNode(item.text || item.claim || item.title || item.summary || "Untitled item"));
       const evidenceItems = evidenceListFromItem(item);
@@ -721,6 +997,65 @@ function renderList(container, items) {
     }
     container.appendChild(li);
   });
+
+  if (options.limit && items.length > options.limit) {
+    const button = document.createElement("button");
+    button.className = "view-all-button";
+    button.type = "button";
+    button.dataset.listToggle = options.variant || "items";
+    button.dataset.hiddenCount = String(items.length - options.limit);
+    button.textContent = `View all ${items.length - options.limit}`;
+    container.after(button);
+  }
+}
+
+function handleCopyClick(event) {
+  const referenceButton = event.target.closest("[data-copy-reference]");
+  if (referenceButton) {
+    const text = referenceButton.closest(".reference-entry")?.querySelector(".reference-text")?.textContent?.trim() || "";
+    copyButtonText(referenceButton, text);
+    return;
+  }
+
+  const button = event.target.closest("[data-copy-field]");
+  if (!button) return;
+  const field = button.dataset.copyField;
+  const text = getCopyText(field);
+  if (!text) return;
+
+  copyButtonText(button, text);
+}
+
+function copyButtonText(button, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const previous = button.textContent;
+    button.textContent = "Copied";
+    window.setTimeout(() => {
+      button.textContent = previous;
+    }, 1100);
+  }).catch(() => {
+    button.textContent = "Copy failed";
+  });
+}
+
+function getCopyText(field) {
+  if (field === "summary") {
+    return resultPanel.querySelector('[data-field="summary"]')?.textContent?.trim() || "";
+  }
+  if (field === "keyIdeas") {
+    return listCopyText(resultPanel.querySelector('[data-field="keyIdeas"]'));
+  }
+  if (field === "contributions") {
+    return listCopyText(resultPanel.querySelector('[data-field="contributions"]'));
+  }
+  return "";
+}
+
+function listCopyText(list) {
+  if (!list) return "";
+  return [...list.querySelectorAll(":scope > li")]
+    .map((item, index) => `${index + 1}. ${item.childNodes[0]?.textContent?.trim() || item.textContent.trim()}`)
+    .join("\n");
 }
 
 function renderOptionalEvidenceSections(container, summary) {
@@ -829,11 +1164,28 @@ function renderReferences(container, references) {
     return;
   }
 
-  references.forEach((reference) => {
+  references.forEach((reference, index) => {
     const li = document.createElement("li");
-    li.textContent = stripReferenceNumber(reference);
+    const text = stripReferenceNumber(reference);
+    const isLong = text.length > 260;
+    li.className = "reference-entry";
+    if (isLong) li.dataset.collapsed = "true";
+    li.innerHTML = `
+      <span class="reference-number">[${index + 1}]</span>
+      <span class="reference-text">${escapeHtml(text)}</span>
+      ${isLong ? '<button class="reference-more" type="button" data-reference-toggle>More</button>' : ""}
+      <button class="copy-button reference-copy" type="button" data-copy-reference="${index}">Copy</button>
+    `;
     container.appendChild(li);
   });
+}
+
+function toggleReference(button) {
+  const entry = button.closest(".reference-entry");
+  if (!entry) return;
+  const collapsed = entry.dataset.collapsed !== "false";
+  entry.dataset.collapsed = collapsed ? "false" : "true";
+  button.textContent = collapsed ? "Less" : "More";
 }
 
 function bindTabs(root) {
@@ -976,11 +1328,98 @@ async function deleteHistoryItem(item) {
 
 function formatMode(mode) {
   const labels = {
-    paragraph: "Paragraph summary",
+    paragraph: "Quick summary",
     standard: "Standard summary",
-    one_page: "One-page summary",
+    one_page: "Detailed summary",
   };
   return labels[mode] || "Standard summary";
+}
+
+function formatOverviewMeta(result, text) {
+  const parts = [formatMode(result.summary_mode)];
+  const words = countWords(text);
+  if (words) parts.push(`≈${words} words`);
+  if (result.processing_seconds !== undefined) parts.push(`Generated in ${formatSeconds(result.processing_seconds)}`);
+  return parts.join(" · ");
+}
+
+function renderPaperInfo(container, result, fallbackFilename) {
+  if (!container) return;
+  container.innerHTML = "";
+  const source = result.source_metadata || {};
+  const summaryText = result.document_summary?.summary || "";
+  const wordCount = countWords(summaryText);
+  const authors = Array.isArray(source.authors) ? source.authors.filter(Boolean).join(", ") : "";
+  const categories = Array.isArray(source.categories) ? source.categories.filter(Boolean).join(" · ") : "";
+  const groups = [
+    ["Document", [
+      ["Title", source.title || result.paper_title || ""],
+      ["Pages", result.page_count ? String(result.page_count) : ""],
+      ["Sections", result.summary_input_sections?.length ? String(result.summary_input_sections.length) : ""],
+      ["References", result.references?.length ? String(result.references.length) : ""],
+      ["File", fallbackFilename],
+    ]],
+    ["Publication", [
+      ["Authors", authors],
+      ["Published", source.published || ""],
+      ["Updated", source.updated || ""],
+      ["Category", categories],
+      ["arXiv", source.arxiv_id || ""],
+      ["DOI", source.doi || ""],
+    ]],
+    ["Analysis", [
+      ["Summary mode", formatMode(result.summary_mode)],
+      ["Generated", result.generated_at ? formatDate(result.generated_at) : ""],
+    ]],
+    ["Reading", [
+      ["Estimated time", wordCount ? `${Math.max(1, Math.ceil(wordCount / 220))} min` : ""],
+      ["Word count", wordCount ? `≈${wordCount}` : ""],
+    ]],
+  ];
+
+  groups.forEach(([heading, rows]) => {
+    const visibleRows = rows.filter(([, value]) => value);
+    if (!visibleRows.length) return;
+    const group = document.createElement("div");
+    group.className = "paper-info-group";
+    group.innerHTML = `<h4>${escapeHtml(heading)}</h4><dl></dl>`;
+    const list = group.querySelector("dl");
+    visibleRows.forEach(([label, value]) => appendPaperInfoRow(list, label, value));
+    container.appendChild(group);
+  });
+
+  if (source.abs_url || source.pdf_url) {
+    const group = document.createElement("div");
+    group.className = "paper-info-group";
+    const links = document.createElement("div");
+    links.className = "paper-info-links";
+    group.innerHTML = "<h4>Open</h4>";
+    if (source.abs_url) links.appendChild(paperInfoLink("View on arXiv", source.abs_url));
+    if (source.pdf_url) links.appendChild(paperInfoLink("Open PDF", source.pdf_url));
+    group.appendChild(links);
+    container.appendChild(group);
+  }
+}
+
+function appendPaperInfoRow(container, label, value) {
+  const dt = document.createElement("dt");
+  const dd = document.createElement("dd");
+  dt.textContent = label;
+  dd.textContent = value;
+  container.append(dt, dd);
+}
+
+function paperInfoLink(label, href) {
+  const link = document.createElement("a");
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  link.textContent = label;
+  return link;
+}
+
+function countWords(text) {
+  return String(text || "").match(/\b[\w'-]+\b/g)?.length || 0;
 }
 
 function formatMeta(result) {
@@ -1004,6 +1443,10 @@ function formatPages(pages) {
 function formatSeconds(seconds) {
   if (seconds === undefined || seconds === null) return "time unavailable";
   return `${Number(seconds).toFixed(2)}s`;
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat(undefined).format(Number(value || 0));
 }
 
 function formatDate(value) {

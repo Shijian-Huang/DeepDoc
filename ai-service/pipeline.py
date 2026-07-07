@@ -24,7 +24,8 @@ def run_pipeline(file_path: str, summary_mode: str = "standard"):
             },
             "chunk_summaries": [],
             "references": [],
-            "evidence_sources": []
+            "evidence_sources": [],
+            "page_count": len(pages)
         }
 
     summary_input, selected_sections, evidence_sources = build_summary_input_from_pages(
@@ -46,7 +47,8 @@ def run_pipeline(file_path: str, summary_mode: str = "standard"):
             "chunk_summaries": [],
             "references": extract_references(raw_text),
             "summary_input_sections": selected_sections,
-            "evidence_sources": evidence_sources
+            "evidence_sources": evidence_sources,
+            "page_count": len(pages)
         }
 
     final_summary = summarize_research_paper(
@@ -63,5 +65,6 @@ def run_pipeline(file_path: str, summary_mode: str = "standard"):
         # "chunk_summaries": [],
         "references": references,
         "summary_input_sections": selected_sections,
-        "evidence_sources": evidence_sources
+        "evidence_sources": evidence_sources,
+        "page_count": len(pages)
     }

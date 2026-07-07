@@ -14,15 +14,25 @@ from pathlib import Path
 from uuid import uuid4
 
 from llm.summarizer import generate_video_script, gemini_configuration_error, is_gemini_configured
+from parser.pdf_parser import parse_pdf_pages
+from parser.reference_extractor import extract_references
 from pipeline import run_pipeline
 from services.arxiv_service import (
     ArxivServiceError,
     arxiv_id_from_pdf_url,
     download_arxiv_pdf,
     is_valid_arxiv_pdf_url,
-    search_arxiv,
+    search_arxiv_page,
 )
-from storage import delete_analysis, get_analysis, list_analyses, save_analysis, save_video_result, save_video_script
+from storage import (
+    delete_analysis,
+    get_analysis,
+    list_analyses,
+    save_analysis,
+    save_analysis_record,
+    save_video_result,
+    save_video_script,
+)
 from video_generator import (
     PIPER_BIN,
     PIPER_MODEL,
@@ -49,9 +59,19 @@ class ArxivAnalyzeRequest(BaseModel):
     arxiv_id: str
     pdf_url: str
     summary_mode: str = "standard"
+    title: str | None = None
+    authors: list[str] | None = None
+    published: str | None = None
+    updated: str | None = None
+    categories: list[str] | None = None
 
 
-def analyze_pdf_file(file_path: str | Path, filename: str, summary_mode: str = "standard") -> dict:
+def analyze_pdf_file(
+    file_path: str | Path,
+    filename: str,
+    summary_mode: str = "standard",
+    source_metadata: dict | None = None,
+) -> dict:
     _ensure_gemini_configured()
 
     started_at = time.perf_counter()
@@ -66,6 +86,8 @@ def analyze_pdf_file(file_path: str | Path, filename: str, summary_mode: str = "
     result["submitted_at"] = submitted_at.isoformat()
     result["generated_at"] = generated_at.isoformat()
     result["processing_seconds"] = round(time.perf_counter() - started_at, 2)
+    if source_metadata:
+        result["source_metadata"] = source_metadata
     record = save_analysis(filename, result, source_pdf_path=Path(file_path))
     return record["result"]
 
@@ -663,6 +685,55 @@ def _record_pdf_path(record: dict) -> Path:
     return candidates[0]
 
 
+def _references_need_legacy_repair(references: object) -> bool:
+    if not isinstance(references, list) or not references:
+        return False
+    joined = " ".join(str(reference) for reference in references).lower()
+    action_option_count = sum(
+        1
+        for reference in references
+        if re.search(r"\baction\s+[ab]\s+applies\b", str(reference), re.IGNORECASE)
+    )
+    return (
+        action_option_count >= 3
+        or (
+            len(references) <= 10
+            and "action a applies" in joined
+            and "action b applies" in joined
+        )
+    )
+
+
+def _record_with_repaired_references(record: dict, persist: bool = True) -> dict:
+    result = record.get("result")
+    if not isinstance(result, dict) or not _references_need_legacy_repair(result.get("references")):
+        return record
+
+    pdf_path = _record_pdf_path(record)
+    if not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
+        return record
+
+    try:
+        pages = parse_pdf_pages(str(pdf_path))
+        raw_text = "\n".join(page.get("raw_text", page.get("text", "")) for page in pages)
+        repaired_references = extract_references(raw_text)
+    except Exception:
+        return record
+
+    old_count = len(result.get("references") or [])
+    if len(repaired_references) <= old_count:
+        return record
+
+    repaired_record = json.loads(json.dumps(record))
+    repaired_result = repaired_record.setdefault("result", {})
+    repaired_result["references"] = repaired_references
+    repaired_result["references_repaired_from_pdf"] = True
+    if persist:
+        analysis_id = str(repaired_record.get("analysis_id") or repaired_result.get("analysis_id") or "")
+        save_analysis_record(analysis_id, repaired_record)
+    return repaired_record
+
+
 @app.get("/")
 async def read_index():
     return FileResponse(STATIC_DIR / "index.html")
@@ -712,10 +783,23 @@ async def analyze_pdf(
 @app.get("/arxiv/search")
 async def arxiv_search(
     q: str = Query(..., min_length=1, max_length=160),
-    max_results: int = Query(10, ge=1, le=25),
+    max_results: int = Query(20, ge=1, le=25),
+    start: int = Query(0, ge=0),
+    search_field: str = Query("all", max_length=20),
+    category: str = Query("", max_length=40),
+    sort_by: str = Query("relevance", max_length=24),
+    sort_order: str = Query("descending", max_length=16),
 ):
     try:
-        return {"results": search_arxiv(q, max_results=max_results)}
+        return search_arxiv_page(
+            q,
+            max_results=max_results,
+            start=start,
+            search_field=search_field,
+            category=category,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
     except ArxivServiceError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -746,6 +830,17 @@ async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
             pdf_path,
             f"arxiv-{request.arxiv_id}.pdf",
             summary_mode=request.summary_mode,
+            source_metadata={
+                "source": "arxiv",
+                "arxiv_id": request.arxiv_id,
+                "title": request.title,
+                "authors": request.authors or [],
+                "published": request.published,
+                "updated": request.updated,
+                "categories": request.categories or [],
+                "abs_url": f"https://arxiv.org/abs/{request.arxiv_id}",
+                "pdf_url": request.pdf_url,
+            },
         )
     except HTTPException:
         _remove_file_if_exists(pdf_path)
@@ -776,6 +871,7 @@ async def reanalyze_existing_pdf(analysis_id: str):
         pdf_path,
         Path(record.get("filename") or pdf_path.name).name,
         summary_mode=summary_mode,
+        source_metadata=result.get("source_metadata") if isinstance(result.get("source_metadata"), dict) else None,
     )
 
 
@@ -887,6 +983,7 @@ async def download_analysis_markdown(analysis_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
+    record = _record_with_repaired_references(record)
     content = _analysis_markdown(record, analysis_id)
     return Response(
         content=content,
@@ -960,10 +1057,16 @@ async def download_analysis(analysis_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    return FileResponse(
-        Path(__file__).resolve().parent / "data" / "analyses" / f"{analysis_id}.json",
+    record = _record_with_repaired_references(record)
+    content = json.dumps(record, ensure_ascii=False, indent=2)
+    return Response(
+        content=content,
         media_type="application/json",
-        filename=_artifact_filename(record, analysis_id, "analysis", "json"),
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{_artifact_filename(record, analysis_id, "analysis", "json")}"'
+            )
+        },
     )
 
 
@@ -984,4 +1087,4 @@ async def get_analysis_by_id(analysis_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    return record
+    return _record_with_repaired_references(record)

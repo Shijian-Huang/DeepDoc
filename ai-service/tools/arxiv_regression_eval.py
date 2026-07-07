@@ -2,11 +2,13 @@
 import argparse
 import json
 import random
+import re
 import sys
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from parser.pdf_parser import extract_pdf_title, parse_pdf_pages
 from parser.reference_extractor import extract_references
 from pipeline import run_pipeline
-from services.arxiv_service import ArxivServiceError, download_arxiv_pdf, search_arxiv
+from services.arxiv_service import ArxivServiceError, download_arxiv_pdf
 from utils.section_extractor import build_summary_input_from_pages, split_pages_into_sections
 
 
@@ -32,14 +34,52 @@ DEFAULT_CATEGORIES = [
 REPORT_DIR = ROOT / "data" / "eval_reports"
 PDF_DIR = ROOT / "data" / "eval_pdfs"
 
+SUMMARY_MIN_WORDS = {
+    "paragraph": 70,
+    "standard": 170,
+    "one_page": 300,
+}
+
+
+def count_words(text: str) -> int:
+    return len(re.findall(r"\b[\w'-]+\b", str(text or "")))
+
+
+def text_tokens(text: str) -> set[str]:
+    stopwords = {
+        "the", "and", "for", "with", "that", "this", "from", "into", "paper",
+        "study", "method", "approach", "results", "show", "shows", "using",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z'-]{2,}", str(text or "").lower())
+        if token not in stopwords
+    }
+
+
+def has_near_duplicate(left_items: list, right_items: list) -> bool:
+    for left in left_items:
+        left_tokens = text_tokens(left)
+        if not left_tokens:
+            continue
+        for right in right_items:
+            right_tokens = text_tokens(right)
+            if not right_tokens:
+                continue
+            overlap = len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
+            if overlap >= 0.78:
+                return True
+    return False
+
 
 def sample_arxiv_papers(categories: list[str], count: int, max_start: int, seed: int | None) -> list[dict]:
     rng = random.Random(seed)
     papers: list[dict] = []
     seen_ids: set[str] = set()
     attempts = 0
+    failure_streak = 0
 
-    while len(papers) < count and attempts < count * 8:
+    while len(papers) < count and attempts < count * 6:
         attempts += 1
         category = rng.choice(categories)
         start = rng.randint(0, max_start)
@@ -47,10 +87,13 @@ def sample_arxiv_papers(categories: list[str], count: int, max_start: int, seed:
         try:
             results = search_arxiv_with_start(query, max_results=5, start=start)
         except ArxivServiceError as error:
-            print(f"[warn] arXiv search failed for {query} start={start}: {error}", file=sys.stderr)
-            time.sleep(1.0)
+            failure_streak += 1
+            if failure_streak <= 3 or failure_streak % 10 == 0:
+                print(f"[warn] arXiv search failed for {query} start={start}: {error}", file=sys.stderr)
+            time.sleep(min(12.0, 1.5 * failure_streak))
             continue
 
+        failure_streak = 0
         rng.shuffle(results)
         for paper in results:
             arxiv_id = paper.get("arxiv_id")
@@ -60,9 +103,38 @@ def sample_arxiv_papers(categories: list[str], count: int, max_start: int, seed:
             papers.append(paper)
             break
 
-        time.sleep(0.35)
+        time.sleep(1.1)
+
+    if len(papers) < count:
+        print(
+            f"[warn] Random arXiv sampling found {len(papers)}/{count}; trying latest-paper fallback.",
+            file=sys.stderr,
+        )
+        for paper in latest_arxiv_papers(categories, count * 2):
+            arxiv_id = paper.get("arxiv_id")
+            if not arxiv_id or arxiv_id in seen_ids:
+                continue
+            seen_ids.add(arxiv_id)
+            papers.append(paper)
+            if len(papers) >= count:
+                break
 
     return papers[:count]
+
+
+def latest_arxiv_papers(categories: list[str], limit: int) -> list[dict]:
+    papers: list[dict] = []
+    for category in categories:
+        if len(papers) >= limit:
+            break
+        query = f"cat:{category}"
+        try:
+            papers.extend(search_arxiv_with_start(query, max_results=min(25, limit - len(papers)), start=0))
+        except ArxivServiceError as error:
+            print(f"[warn] Latest-paper fallback failed for {query}: {error}", file=sys.stderr)
+            time.sleep(8.0)
+        time.sleep(3.0)
+    return papers[:limit]
 
 
 def search_arxiv_with_start(query: str, max_results: int, start: int) -> list[dict]:
@@ -86,8 +158,12 @@ def search_arxiv_with_start(query: str, max_results: int, start: int) -> list[di
     try:
         with urlopen(request, timeout=arxiv_service.DOWNLOAD_TIMEOUT_SECONDS) as response:
             payload = response.read()
-    except Exception as error:
-        raise ArxivServiceError("Could not search arXiv for regression sampling.") from error
+    except HTTPError as error:
+        if error.code == 429:
+            raise ArxivServiceError("arXiv rate limit reached; retry after a short pause.") from error
+        raise ArxivServiceError(f"arXiv search failed with HTTP {error.code}.") from error
+    except (URLError, TimeoutError) as error:
+        raise ArxivServiceError("Could not reach arXiv for regression sampling.") from error
 
     root = ElementTree.fromstring(payload)
     papers: list[dict] = []
@@ -164,14 +240,37 @@ def diagnose_pdf(pdf_path: Path, summary_mode: str, run_llm: bool) -> dict:
     if run_llm:
         pipeline_result = run_pipeline(str(pdf_path), summary_mode=summary_mode)
         summary = pipeline_result.get("document_summary", {})
+        key_ideas = summary.get("key_ideas") if isinstance(summary.get("key_ideas"), list) else []
+        contributions = summary.get("contributions") if isinstance(summary.get("contributions"), list) else []
+        evidence = summary.get("evidence") if isinstance(summary.get("evidence"), list) else []
+        limitations = summary.get("limitations") if isinstance(summary.get("limitations"), list) else []
+        discussion_questions = (
+            summary.get("discussion_questions")
+            if isinstance(summary.get("discussion_questions"), list)
+            else []
+        )
+        summary_text = str(summary.get("summary") or "")
+        summary_words = int(summary.get("summary_word_count") or count_words(summary_text))
         result["pipeline"] = {
             "summary_mode": pipeline_result.get("summary_mode"),
-            "summary_word_count": summary.get("summary_word_count"),
-            "evidence_count": len(summary.get("evidence") or []),
+            "summary_word_count": summary_words,
+            "key_idea_count": len(key_ideas),
+            "contribution_count": len(contributions),
+            "limitation_count": len(limitations),
+            "discussion_question_count": len(discussion_questions),
+            "evidence_count": len(evidence),
             "reference_count": len(pipeline_result.get("references") or []),
             "summary_input_sections": pipeline_result.get("summary_input_sections") or [],
         }
-        if not summary.get("evidence"):
+        if summary_words < SUMMARY_MIN_WORDS.get(summary_mode, 170):
+            flags.append("pipeline_short_summary")
+        if len(key_ideas) < 3:
+            flags.append("pipeline_few_key_ideas")
+        if len(contributions) < 2:
+            flags.append("pipeline_few_contributions")
+        if has_near_duplicate(key_ideas, contributions):
+            flags.append("pipeline_key_contribution_overlap")
+        if len(evidence) < 3:
             flags.append("pipeline_missing_evidence")
         if len(pipeline_result.get("references") or []) == 0:
             flags.append("pipeline_missing_references")
@@ -212,6 +311,14 @@ def write_reports(results: list[dict], output_prefix: Path) -> tuple[Path, Path]
             f"- Flags: {', '.join(flags) if flags else 'none'}",
             "",
         ])
+        if diag.get("pipeline"):
+            pipeline = diag["pipeline"]
+            lines.extend([
+                f"  - Summary words: {pipeline.get('summary_word_count', 0)}",
+                f"  - Key ideas / contributions / evidence: {pipeline.get('key_idea_count', 0)} / {pipeline.get('contribution_count', 0)} / {pipeline.get('evidence_count', 0)}",
+                f"  - Limitations / discussion questions: {pipeline.get('limitation_count', 0)} / {pipeline.get('discussion_question_count', 0)}",
+                "",
+            ])
     md_path.write_text("\n".join(lines), encoding="utf-8")
     return json_path, md_path
 
@@ -236,7 +343,7 @@ def main() -> int:
     if args.pdfs:
         for index, raw_path in enumerate(args.pdfs, start=1):
             pdf_path = Path(raw_path).expanduser().resolve()
-            print(f"[{index}/{len(args.pdfs)}] local PDF {pdf_path.name}")
+            print(f"[{index}/{len(args.pdfs)}] local PDF {pdf_path.name}", flush=True)
             item = {
                 "arxiv_id": pdf_path.stem,
                 "title": pdf_path.stem,
@@ -245,6 +352,7 @@ def main() -> int:
             }
             try:
                 item["diagnostics"] = diagnose_pdf(pdf_path, args.summary_mode, args.run_llm)
+                item["title"] = item["diagnostics"].get("title") or item["title"]
             except Exception as error:
                 item["diagnostics"] = {"flags": ["eval_failed"], "error": str(error)}
             results.append(item)
@@ -252,7 +360,7 @@ def main() -> int:
         papers = sample_arxiv_papers(args.categories, args.count, args.max_start, args.seed)
         for index, paper in enumerate(papers, start=1):
             arxiv_id = paper.get("arxiv_id", "unknown")
-            print(f"[{index}/{len(papers)}] {arxiv_id} {paper.get('title', '')[:80]}")
+            print(f"[{index}/{len(papers)}] {arxiv_id} {paper.get('title', '')[:80]}", flush=True)
             item = dict(paper)
             try:
                 pdf_path = download_arxiv_pdf(paper["pdf_url"], arxiv_id, temp_dir)

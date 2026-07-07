@@ -83,6 +83,21 @@ def get_analysis(analysis_id: str) -> Optional[dict]:
         return None
 
 
+def save_analysis_record(analysis_id: str, record: dict) -> Optional[dict]:
+    _ensure_data_dir()
+    if not ANALYSIS_ID_RE.match(analysis_id):
+        return None
+
+    record["analysis_id"] = analysis_id
+    result = record.get("result")
+    if isinstance(result, dict):
+        result["analysis_id"] = result.get("analysis_id") or analysis_id
+
+    record_path = DATA_DIR / f"{analysis_id}.json"
+    record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return record
+
+
 def _path_inside(path: Path, parent: Path) -> bool:
     try:
         path.resolve(strict=False).relative_to(parent.resolve(strict=False))

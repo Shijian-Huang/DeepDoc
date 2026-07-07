@@ -37,28 +37,28 @@ def require_gemini_api_key() -> None:
 
 SUMMARY_MODE_INSTRUCTIONS = {
     "paragraph": (
-        "Write exactly one concise paragraph. The summary field must be 80-120 words."
+        "Write exactly one concise narrative overview paragraph. The summary field must be 80-120 words."
     ),
     "standard": (
-        "Write 2-3 developed paragraphs. The summary field must be 220-300 words. "
-        "Do not write fewer than 200 words."
+        "Write 1-2 focused narrative overview paragraphs. The summary field must be 200-250 words. "
+        "Do not write fewer than 180 words."
     ),
     "one_page": (
-        "Write 4-6 well-developed paragraphs. The summary field must be 500-650 words. "
-        "Do not write fewer than 450 words."
+        "Write 3-4 well-developed narrative overview paragraphs. The summary field must be 350-420 words. "
+        "Do not write fewer than 320 words."
     ),
 }
 
 SUMMARY_MODE_MIN_WORDS = {
     "paragraph": 80,
-    "standard": 200,
-    "one_page": 450,
+    "standard": 180,
+    "one_page": 320,
 }
 
 SUMMARY_MODE_TARGET_WORDS = {
     "paragraph": "80-120",
-    "standard": "220-300",
-    "one_page": "500-650",
+    "standard": "200-250",
+    "one_page": "350-420",
 }
 
 def wait_for_rate_limit():
@@ -183,6 +183,123 @@ def count_words(text: str) -> int:
     return len(re.findall(r"\b[\w'-]+\b", text))
 
 
+def _as_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        items = value
+    elif value:
+        items = [value]
+    else:
+        items = []
+
+    texts: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            text = (
+                item.get("text")
+                or item.get("claim")
+                or item.get("title")
+                or item.get("summary")
+                or ""
+            )
+        else:
+            text = str(item or "")
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _content_tokens(text: str) -> set[str]:
+    stopwords = {
+        "the", "and", "for", "with", "that", "this", "from", "into", "their",
+        "paper", "study", "approach", "method", "results", "show", "shows",
+        "using", "used", "can", "are", "was", "were", "has", "have",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z'-]{2,}", text.lower())
+        if token not in stopwords
+    }
+
+
+def _is_near_duplicate(left: str, right: str) -> bool:
+    left_tokens = _content_tokens(left)
+    right_tokens = _content_tokens(right)
+    if not left_tokens or not right_tokens:
+        return left.strip().lower() == right.strip().lower()
+    overlap = len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
+    return overlap >= 0.78
+
+
+def _dedupe_text_list(items: list[str], blocked_items: list[str] | None = None, limit: int = 6) -> list[str]:
+    blocked_items = blocked_items or []
+    deduped: list[str] = []
+    for item in items:
+        if any(_is_near_duplicate(item, blocked) for blocked in blocked_items):
+            continue
+        if any(_is_near_duplicate(item, existing) for existing in deduped):
+            continue
+        deduped.append(item)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _normalize_pages(value: Any) -> list[int]:
+    raw_pages = value if isinstance(value, list) else [value]
+    pages: list[int] = []
+    for raw_page in raw_pages:
+        try:
+            page = int(raw_page)
+        except (TypeError, ValueError):
+            continue
+        if page > 0 and page not in pages:
+            pages.append(page)
+    return pages
+
+
+def normalize_research_summary_result(result: dict, summary_mode: str) -> dict:
+    normalized = dict(result or {})
+    summary = re.sub(r"\s+", " ", str(normalized.get("summary") or "")).strip()
+    normalized["summary"] = summary
+    normalized["summary_word_count"] = count_words(summary)
+
+    key_ideas = _dedupe_text_list(_as_text_list(normalized.get("key_ideas")), limit=6)
+    contributions = _dedupe_text_list(
+        _as_text_list(normalized.get("contributions")),
+        blocked_items=key_ideas,
+        limit=5,
+    )
+    normalized["key_ideas"] = key_ideas
+    normalized["contributions"] = contributions
+    normalized["limitations"] = _dedupe_text_list(_as_text_list(normalized.get("limitations")), limit=4)
+    normalized["discussion_questions"] = _dedupe_text_list(
+        _as_text_list(normalized.get("discussion_questions") or normalized.get("discussionQuestions")),
+        limit=4,
+    )
+
+    evidence_items: list[dict] = []
+    evidence = normalized.get("evidence")
+    if isinstance(evidence, list):
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            claim = re.sub(r"\s+", " ", str(item.get("claim") or item.get("summary") or "")).strip()
+            if not claim:
+                continue
+            section = re.sub(r"\s+", "_", str(item.get("section") or "unknown").strip().lower()) or "unknown"
+            pages = _normalize_pages(item.get("pages") or item.get("page_numbers") or item.get("page"))
+            evidence_items.append({
+                "claim": claim,
+                "section": section,
+                "pages": pages,
+            })
+            if len(evidence_items) >= 6:
+                break
+    normalized["evidence"] = evidence_items
+    return normalized
+
+
 def needs_summary_expansion(result: dict, summary_mode: str) -> bool:
     summary = result.get("summary", "")
     return count_words(summary) < SUMMARY_MODE_MIN_WORDS[summary_mode]
@@ -263,12 +380,16 @@ def build_research_summary_prompt(
     Do not count key_ideas, contributions, references, evidence, or summary_word_count toward the word count.
     {retry_instruction}
 
-    Focus on:
-    - Main problem
-    - Core method
-    - Key findings
-    - Main contributions
-    - Evidence-grounded claims
+    Information architecture:
+    - The "summary" field is an Overview. It should tell the overall narrative of the paper:
+      context, why the problem matters, the broad approach, and the final takeaway.
+    - Do not repeat the key ideas or contributions in detail inside the Overview.
+      Those belong in the dedicated "key_ideas" and "contributions" fields.
+    - "key_ideas" should capture the most important conceptual ideas needed to understand the paper.
+      Avoid phrasing these as novelty claims.
+    - "contributions" should capture what is genuinely new or added by the paper.
+      Avoid repeating general background, motivation, or the same wording used in key_ideas.
+    - Keep all fields evidence-grounded.
 
     Evidence selection rules:
     - Prefer specific evidence from method, experiment, results, or conclusion sections.
@@ -277,6 +398,8 @@ def build_research_summary_prompt(
       or comparisons against baselines, choose experiment or results pages rather than the abstract.
     - Each evidence claim should be anchored to the most specific section and page range available in the paper text.
     - Include 4-6 evidence items when enough grounded claims are available.
+    - Include 2-4 limitations if the paper states clear boundaries, assumptions, threats to validity, or failure cases.
+    - Include 2-4 discussion_questions that would help a reader evaluate the paper in a reading group.
 
     Return ONLY valid JSON:
     {{
@@ -284,6 +407,8 @@ def build_research_summary_prompt(
       "summary_word_count": 0,
       "key_ideas": ["...", "..."],
       "contributions": ["...", "..."],
+      "limitations": ["...", "..."],
+      "discussion_questions": ["...", "..."],
       "evidence": [
         {{
           "claim": "...",
@@ -304,8 +429,8 @@ def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard
 
     try:
         result = generate_json(prompt)
-        word_count = count_words(result.get("summary", ""))
-        result["summary_word_count"] = word_count
+        result = normalize_research_summary_result(result, normalized_mode)
+        word_count = result["summary_word_count"]
         _normalize_evidence_sources(result, evidence_packet)
 
         if needs_summary_expansion(result, normalized_mode):
@@ -315,9 +440,7 @@ def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard
                 retry_word_count=word_count,
             )
             retry_result = generate_json(retry_prompt)
-            retry_result["summary_word_count"] = count_words(
-                retry_result.get("summary", "")
-            )
+            retry_result = normalize_research_summary_result(retry_result, normalized_mode)
             _normalize_evidence_sources(retry_result, evidence_packet)
             return retry_result
 
@@ -328,6 +451,8 @@ def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard
             "summary_word_count": 0,
             "key_ideas": [],
             "contributions": [],
+            "limitations": [],
+            "discussion_questions": [],
             "evidence": [],
             "error": error.doc
         }

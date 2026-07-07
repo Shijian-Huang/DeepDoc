@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeepDoc</title>
-    <link rel="stylesheet" href="/static/styles.css?v=deploy-cleanup-20260706" />
+    <link rel="stylesheet" href="/static/styles.css?v=github-icon-20260707" />
   </head>
   <body>
     <main class="app-shell">
@@ -12,11 +12,12 @@
         <header class="topbar">
           <div class="brand-lockup">
             <h1 id="brandHomeButton" tabindex="0">DeepDoc</h1>
-            <p>Read the paper, inspect the evidence, and turn analysis into slides.</p>
+            <p>Read papers with evidence you can verify.</p>
           </div>
           <div class="topbar-actions">
-            <button id="openHistoryButton" class="ghost-button" type="button">History</button>
-            <a class="docs-link" href="/docs">API Docs</a>
+            <button id="openHistoryButton" class="icon-button" type="button" aria-label="History" title="History">History</button>
+            <a class="icon-button" href="/docs" aria-label="API Docs" title="API Docs">API Docs</a>
+            <a class="icon-button" href="https://github.com/Shijian-Huang/DeepDoc" target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub">GitHub</a>
           </div>
         </header>
 
@@ -31,15 +32,16 @@
               <label class="drop-zone" for="pdfFile">
                 <input id="pdfFile" name="file" type="file" accept="application/pdf" required />
                 <span class="drop-icon">PDF</span>
-                <span class="drop-title" id="fileLabel">Choose a PDF</span>
-                <span class="drop-meta">Maximum usefulness comes from text-based research papers.</span>
+                <span class="drop-title" id="fileLabel">Drop a research paper</span>
+                <span class="drop-choice">or choose a PDF</span>
+                <span class="drop-meta">Supports text-based academic PDFs.</span>
               </label>
 
               <fieldset class="mode-group">
-                <legend>Summary mode</legend>
+                <legend>Summary</legend>
                 <label>
                   <input type="radio" name="summaryMode" value="paragraph" />
-                  <span>Paragraph</span>
+                  <span>Quick</span>
                 </label>
                 <label>
                   <input type="radio" name="summaryMode" value="standard" checked />
@@ -47,43 +49,95 @@
                 </label>
                 <label>
                   <input type="radio" name="summaryMode" value="one_page" />
-                  <span>One page</span>
+                  <span>Detailed</span>
                 </label>
               </fieldset>
 
               <button id="analyzeButton" class="analyze-button" type="submit" aria-live="polite">
-                Analyze
+                Analyze Paper
               </button>
             </form>
           </div>
 
           <div class="source-panel" data-source-panel="arxiv">
             <form id="arxivSearchForm" class="arxiv-search-form">
-              <label class="arxiv-query">
-                <span>Search arXiv</span>
-                <input id="arxivQuery" type="search" placeholder="large language model summarization" autocomplete="off" />
-              </label>
-              <label class="compact-select">
-                <span>Results</span>
-                <select id="arxivMaxResults">
-                  <option value="5">5</option>
-                  <option value="10" selected>10</option>
-                  <option value="15">15</option>
-                  <option value="25">25</option>
-                </select>
-              </label>
-              <label class="compact-select">
-                <span>Summary</span>
-                <select id="arxivSummaryMode">
-                  <option value="paragraph">Paragraph</option>
-                  <option value="standard" selected>Standard</option>
-                  <option value="one_page">One page</option>
-                </select>
-              </label>
-              <button id="arxivSearchButton" class="ghost-button compact-action" type="submit">Search</button>
+              <div class="arxiv-query">
+                <label for="arxivQuery">Search arXiv</label>
+                <div class="arxiv-input-wrap">
+                  <input id="arxivQuery" type="search" placeholder="Search papers, topics, or authors..." autocomplete="off" />
+                  <button id="arxivSearchButton" class="arxiv-search-button" type="submit" aria-label="Search arXiv">Search</button>
+                </div>
+              </div>
+              <div class="arxiv-filter-row">
+                <label class="compact-select">
+                  <span>Search in</span>
+                  <select id="arxivSearchField">
+                    <option value="all" selected>All fields</option>
+                    <option value="title">Title</option>
+                    <option value="author">Author</option>
+                    <option value="abstract">Abstract</option>
+                  </select>
+                </label>
+                <label class="compact-select">
+                  <span>Category</span>
+                  <select id="arxivCategory">
+                    <option value="">All categories</option>
+                    <option value="cs.AI">cs.AI</option>
+                    <option value="cs.CL">cs.CL</option>
+                    <option value="cs.CV">cs.CV</option>
+                    <option value="cs.LG">cs.LG</option>
+                    <option value="cs.RO">cs.RO</option>
+                    <option value="eess.AS">eess.AS</option>
+                    <option value="math.OC">math.OC</option>
+                    <option value="physics.comp-ph">physics.comp-ph</option>
+                    <option value="stat.ML">stat.ML</option>
+                  </select>
+                </label>
+                <label class="compact-select">
+                  <span>Results</span>
+                  <select id="arxivMaxResults">
+                    <option value="5">5</option>
+                    <option value="10">10</option>
+                    <option value="15">15</option>
+                    <option value="20" selected>20</option>
+                    <option value="25">25</option>
+                  </select>
+                </label>
+                <label class="compact-select">
+                  <span>Sort</span>
+                  <select id="arxivSortMode">
+                    <option value="relevance-desc" selected>Best match</option>
+                    <option value="submittedDate-desc">Newest submitted</option>
+                    <option value="submittedDate-asc">Oldest submitted</option>
+                    <option value="lastUpdatedDate-desc">Recently updated</option>
+                    <option value="lastUpdatedDate-asc">Oldest updated</option>
+                  </select>
+                </label>
+                <label class="compact-select">
+                  <span>Summary</span>
+                  <select id="arxivSummaryMode">
+                    <option value="paragraph">Quick</option>
+                    <option value="standard" selected>Standard</option>
+                    <option value="one_page">Detailed</option>
+                  </select>
+                </label>
+              </div>
             </form>
+            <div id="popularSearches" class="popular-searches" aria-label="Popular arXiv searches">
+              <span>Popular searches</span>
+              <button type="button" data-popular-query="large language models">LLM</button>
+              <button type="button" data-popular-query="diffusion models">Diffusion</button>
+              <button type="button" data-popular-query="computer vision">Vision</button>
+              <button type="button" data-popular-query="robotics">Robotics</button>
+              <button type="button" data-popular-query="reasoning agents">Agents</button>
+            </div>
             <div id="arxivSearchStatus" class="result-meta arxiv-search-status"></div>
             <div id="arxivResults" class="arxiv-results"></div>
+            <div id="arxivPagination" class="arxiv-pagination" hidden>
+              <button id="arxivPrevButton" class="ghost-button compact-action" type="button">Previous</button>
+              <span id="arxivPageInfo" class="result-meta">Page 1</span>
+              <button id="arxivNextButton" class="ghost-button compact-action" type="button">Next</button>
+            </div>
           </div>
         </section>
 
@@ -116,9 +170,9 @@
             <span>Filter</span>
             <select id="historyModeFilter">
               <option value="all">All modes</option>
-              <option value="paragraph">Paragraph</option>
+              <option value="paragraph">Quick</option>
               <option value="standard">Standard</option>
-              <option value="one_page">One page</option>
+              <option value="one_page">Detailed</option>
             </select>
           </label>
           <label class="history-date">
@@ -138,27 +192,29 @@
           <p class="result-meta" data-field="meta"></p>
         </div>
         <div class="result-actions">
-          <button class="ghost-button compact-action" type="button" data-field="reanalyze">Reanalyze as New</button>
-          <span class="pdf-status-pill" data-field="pdfStatus">PDF loading</span>
           <details class="download-menu">
-            <summary class="download-button">Download</summary>
+            <summary class="download-button">Download <span aria-hidden="true">⌄</span></summary>
             <div class="download-menu-list">
-              <a data-field="downloadPdf" href="#" download hidden>PDF</a>
-              <a data-field="downloadMarkdown" href="#" download>Analysis Markdown</a>
-              <a data-field="download" href="#" download>Analysis JSON</a>
-              <a data-field="downloadSlidesHtml" href="#" download hidden>Slides HTML</a>
-              <a data-field="downloadSlides" href="#" download hidden>Slides Markdown</a>
-              <a data-field="downloadScript" href="#" download hidden>Slides JSON</a>
-              <a data-field="downloadVideo" href="#" download hidden>MP4 Video</a>
+              <p>Analysis</p>
+              <a data-field="downloadMarkdown" href="#" download>Markdown</a>
+              <a data-field="download" href="#" download>JSON</a>
+              <p>Slides</p>
+              <a data-field="downloadSlidesHtml" href="#" download hidden>HTML</a>
+              <a data-field="downloadSlides" href="#" download hidden>Markdown</a>
+              <a data-field="downloadScript" href="#" download hidden>JSON</a>
+              <a data-field="downloadVideo" href="#" download hidden>Narrated MP4</a>
+              <p>Document</p>
+              <a data-field="downloadPdf" href="#" download hidden>Original PDF</a>
             </div>
           </details>
+          <button class="ghost-button compact-action" type="button" data-field="reanalyze">Reanalyze as New</button>
         </div>
       </div>
 
       <div class="reading-layout">
         <div class="analysis-column">
           <div class="tabs" role="tablist">
-            <button class="tab-button active" type="button" data-tab="summary">Summary</button>
+            <button class="tab-button active" type="button" data-tab="summary">Overview</button>
             <button class="tab-button" type="button" data-tab="evidence">Evidence</button>
             <button class="tab-button" type="button" data-tab="references">References</button>
             <button class="tab-button" type="button" data-tab="video">Slides</button>
@@ -166,19 +222,38 @@
 
           <section class="tab-panel active" data-panel="summary">
             <article class="summary-block">
-              <h3>Document Summary</h3>
-              <p data-field="summary"></p>
+              <div class="section-heading">
+                <div>
+                  <h3>Overview</h3>
+                  <p class="section-meta" data-field="overviewMeta"></p>
+                </div>
+                <button class="copy-button" type="button" data-copy-field="summary">Copy</button>
+              </div>
+              <div class="overview-copy" data-field="overviewCopy">
+                <p data-field="summary"></p>
+              </div>
+              <button class="show-more-button" type="button" data-field="toggleOverview">Show full summary</button>
             </article>
             <div class="summary-grid">
-              <article>
-                <h3>Key Ideas</h3>
+              <article class="key-ideas-card">
+                <div class="section-heading">
+                  <h3>Key Ideas</h3>
+                  <button class="copy-button" type="button" data-copy-field="keyIdeas">Copy</button>
+                </div>
                 <ol data-field="keyIdeas"></ol>
               </article>
-              <article>
-                <h3>Contributions</h3>
+              <article class="contributions-card">
+                <div class="section-heading">
+                  <h3>Contributions</h3>
+                  <button class="copy-button" type="button" data-copy-field="contributions">Copy</button>
+                </div>
                 <ol data-field="contributions"></ol>
               </article>
             </div>
+            <article class="paper-info-card">
+              <h3>Paper Info</h3>
+              <div data-field="paperInfo"></div>
+            </article>
             <div class="optional-analysis-grid" data-field="optionalEvidenceSections"></div>
           </section>
 
@@ -211,18 +286,28 @@
                 </div>
               </div>
               <div class="video-control-bar">
-                <label class="slide-count-control">
-                  <span>Length</span>
-                  <select data-field="slideCount">
-                    <option value="5">5 Brief</option>
-                    <option value="8">8 Balanced</option>
-                    <option value="10" selected>10 Deep dive</option>
-                    <option value="15">15 Lecture</option>
-                  </select>
-                </label>
-                <div class="video-actions">
-                  <button class="primary-button compact-action" type="button" data-field="generateVideoScript">Generate Slides</button>
-                  <button class="ghost-button compact-action" type="button" data-field="generateVideo">Create MP4</button>
+                <div class="slide-stage">
+                  <p class="stage-label">Outline Settings</p>
+                  <label class="slide-count-control">
+                    <span>Length</span>
+                    <select data-field="slideCount">
+                      <option value="5">5 Brief</option>
+                      <option value="8">8 Balanced</option>
+                      <option value="10" selected>10 Deep dive</option>
+                      <option value="15">15 Lecture</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="slide-stage">
+                  <p class="stage-label">Export</p>
+                  <div class="artifact-state-strip" aria-label="Slides and MP4 status">
+                    <span class="artifact-state" data-field="slidesState">Slides not generated</span>
+                    <span class="artifact-state" data-field="mp4State">MP4 not generated</span>
+                  </div>
+                  <div class="video-actions">
+                    <button class="primary-button compact-action" type="button" data-field="generateVideoScript">Generate Slides</button>
+                    <button class="ghost-button compact-action" type="button" data-field="generateVideo">Generate Narrated MP4</button>
+                  </div>
                 </div>
               </div>
               <div data-field="videoStatus" class="result-meta"></div>
@@ -240,6 +325,6 @@
       </div>
     </template>
 
-    <script src="/static/app.js?v=deploy-cleanup-20260706"></script>
+    <script src="/static/app.js?v=github-icon-20260707"></script>
   </body>
 </html>
