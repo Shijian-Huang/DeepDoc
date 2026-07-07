@@ -982,7 +982,9 @@ function renderList(container, items, options = {}) {
     const li = document.createElement("li");
     if (options.limit && index >= options.limit) li.hidden = true;
     if (options.variant) li.dataset.variant = options.variant;
-    if (options.variant === "ideas") li.dataset.index = String(index + 1);
+    if (options.variant === "ideas" || options.variant === "contributions") {
+      li.dataset.index = String(index + 1);
+    }
     if (item && typeof item === "object") {
       li.appendChild(document.createTextNode(item.text || item.claim || item.title || item.summary || "Untitled item"));
       const evidenceItems = evidenceListFromItem(item);

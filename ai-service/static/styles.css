@@ -1667,13 +1667,25 @@ body.has-result [data-field="videoScript"] {
   border-radius: 999px;
   padding: 0 10px;
   background: transparent;
-  color: var(--muted);
+  color: rgba(110, 110, 115, 0.78);
   font-size: 0.76rem;
-  font-weight: 760;
+  font-weight: 700;
+}
+
+.section-heading .copy-button {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease, background 160ms ease, color 160ms ease;
+}
+
+.section-heading:hover .copy-button,
+.section-heading:focus-within .copy-button {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .copy-button:hover {
-  background: var(--panel-solid);
+  background: rgba(255, 255, 255, 0.72);
   color: var(--ink);
 }
 
@@ -1693,15 +1705,19 @@ ol {
 .summary-grid li {
   position: relative;
   margin: 0;
+  border: 1px solid rgba(229, 231, 235, 0.9);
   border-radius: 12px;
-  padding: 10px 10px 10px 44px;
-  background: rgba(247, 247, 249, 0.58);
-  line-height: 1.52;
-  transition: background 160ms ease, transform 160ms ease;
+  padding: 10px 12px 10px 44px;
+  background: #fff;
+  font-weight: 500;
+  line-height: 1.5;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
 .summary-grid li:hover {
-  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(210, 212, 218, 0.95);
+  background: #fafafa;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.028);
   transform: translateY(-1px);
 }
 
@@ -1725,14 +1741,14 @@ ol {
 }
 
 .summary-grid li[data-variant="contributions"]::before {
-  background: rgba(255, 214, 10, 0.3);
-  color: #7a5800;
-  content: "◆";
+  content: attr(data-index);
+  background: rgba(255, 214, 10, 0.22);
+  color: #8a6500;
 }
 
 .summary-grid li[data-variant="contributions"] {
-  background: rgba(255, 249, 231, 0.78);
-  font-weight: 650;
+  background: #fff;
+  font-weight: 500;
 }
 
 .paper-info-card [data-field="paperInfo"] {
