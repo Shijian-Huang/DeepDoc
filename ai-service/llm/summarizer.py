@@ -22,6 +22,19 @@ gemini_models = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite"]
 request_interval_seconds = 4.1
 last_request_at = 0.0
 
+
+def is_gemini_configured() -> bool:
+    return bool(api_key)
+
+
+def gemini_configuration_error() -> str:
+    return "GEMINI_API_KEY is not configured. Add it to ai-service/.env or the server environment."
+
+
+def require_gemini_api_key() -> None:
+    if not is_gemini_configured():
+        raise RuntimeError(gemini_configuration_error())
+
 SUMMARY_MODE_INSTRUCTIONS = {
     "paragraph": (
         "Write exactly one concise paragraph. The summary field must be 80-120 words."
@@ -67,6 +80,7 @@ def extract_json(raw_text: str) -> str:
     return cleaned
 
 def generate_json(prompt: str):
+    require_gemini_api_key()
     last_raw_text = ""
 
     for model in gemini_models:

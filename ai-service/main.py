@@ -6,15 +6,21 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import html
 import json
-import os
 import re
 import shutil
 import time
 from pathlib import Path
+from uuid import uuid4
 
-from llm.summarizer import generate_video_script
+from llm.summarizer import generate_video_script, gemini_configuration_error, is_gemini_configured
 from pipeline import run_pipeline
-from services.arxiv_service import ArxivServiceError, download_arxiv_pdf, is_valid_arxiv_pdf_url, search_arxiv
+from services.arxiv_service import (
+    ArxivServiceError,
+    arxiv_id_from_pdf_url,
+    download_arxiv_pdf,
+    is_valid_arxiv_pdf_url,
+    search_arxiv,
+)
 from storage import delete_analysis, get_analysis, list_analyses, save_analysis, save_video_result, save_video_script
 from video_generator import VideoGenerationError, generate_video_from_script
 
@@ -23,10 +29,11 @@ app = FastAPI(
     description="AI-powered research paper analysis service.",
 )
 
-UPLOAD_DIR = "uploads"
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+STATIC_DIR = BASE_DIR / "static"
 DOWNLOAD_TIMEZONE = ZoneInfo("America/Los_Angeles")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -38,6 +45,9 @@ class ArxivAnalyzeRequest(BaseModel):
 
 
 def analyze_pdf_file(file_path: str | Path, filename: str, summary_mode: str = "standard") -> dict:
+    if not is_gemini_configured():
+        raise HTTPException(status_code=503, detail=gemini_configuration_error())
+
     started_at = time.perf_counter()
     submitted_at = datetime.now(timezone.utc)
 
@@ -50,7 +60,7 @@ def analyze_pdf_file(file_path: str | Path, filename: str, summary_mode: str = "
     result["submitted_at"] = submitted_at.isoformat()
     result["generated_at"] = generated_at.isoformat()
     result["processing_seconds"] = round(time.perf_counter() - started_at, 2)
-    record = save_analysis(filename, result)
+    record = save_analysis(filename, result, source_pdf_path=Path(file_path))
     return record["result"]
 
 
@@ -62,8 +72,9 @@ def _download_timestamp(record: dict) -> str:
         or record.get("created_at")
         or ""
     )
+    timestamp_text = str(timestamp)
     try:
-        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
     except ValueError:
         return _format_download_timestamp(datetime.now(timezone.utc))
 
@@ -86,6 +97,34 @@ def _safe_filename_part(value: object) -> str:
     text = re.sub(r"[^A-Za-z0-9._-]+", "-", text)
     text = re.sub(r"-{2,}", "-", text).strip(".-")
     return text or "analysis"
+
+
+def _safe_pdf_storage_name(filename: str) -> str:
+    original = Path(filename or "uploaded.pdf")
+    stem = _safe_filename_part(original.stem or "paper")
+    suffix = original.suffix.lower() if original.suffix.lower() == ".pdf" else ".pdf"
+    return f"{stem}-{uuid4().hex[:12]}{suffix}"
+
+
+def _normalized_arxiv_id(value: str) -> str:
+    return re.sub(r"v\d+$", "", str(value or "").strip().lower())
+
+
+def _arxiv_version(value: str) -> str:
+    match = re.search(r"(v\d+)$", str(value or "").strip().lower())
+    return match.group(1) if match else ""
+
+
+def _arxiv_ids_match(left: str, right: str) -> bool:
+    left_text = str(left or "").strip().lower()
+    right_text = str(right or "").strip().lower()
+    if not left_text or not right_text:
+        return False
+    if left_text == right_text:
+        return True
+    if _normalized_arxiv_id(left_text) != _normalized_arxiv_id(right_text):
+        return False
+    return not _arxiv_version(left_text) or not _arxiv_version(right_text)
 
 
 def _summary_mode_slug(record: dict) -> str:
@@ -111,8 +150,9 @@ def _artifact_timestamp(record: dict, artifact_key: str | None = None) -> str:
     if not timestamp:
         return _download_timestamp(record)
 
+    timestamp_text = str(timestamp)
     try:
-        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
     except ValueError:
         return _download_timestamp(record)
 
@@ -380,12 +420,14 @@ def _slides_html(record: dict, analysis_id: str) -> str:
         if not isinstance(scene, dict):
             continue
         heading = _markdown_text(scene.get("heading") or f"Slide {scene.get('scene_number', '')}".strip())
-        bullets = scene.get("bullets") if isinstance(scene.get("bullets"), list) else []
-        bullet_html = "\n".join(
-            f"<li>{html.escape(_markdown_text(bullet))}</li>"
-            for bullet in bullets
-            if _markdown_text(bullet)
-        )
+        raw_bullets = scene.get("bullets")
+        bullets = raw_bullets if isinstance(raw_bullets, list) else []
+        bullet_items = []
+        for bullet in bullets:
+            bullet_text = _markdown_text(bullet)
+            if bullet_text:
+                bullet_items.append(f"<li>{html.escape(bullet_text)}</li>")
+        bullet_html = "\n".join(bullet_items)
         voiceover = _markdown_text(scene.get("voiceover"))
         evidence = scene.get("evidence")
         evidence_html = ""
@@ -542,15 +584,50 @@ def _slides_html(record: dict, analysis_id: str) -> str:
 
 
 def _record_pdf_path(record: dict) -> Path:
+    source_pdf_path = str(record.get("source_pdf_path") or "").strip()
+    if source_pdf_path:
+        stored_path = Path(source_pdf_path)
+        if stored_path.exists():
+            return stored_path
+        if not stored_path.is_absolute():
+            service_relative = BASE_DIR / stored_path
+            if service_relative.exists():
+                return service_relative
+
     filename = Path(record.get("filename") or "").name
     if not filename:
         return Path()
-    return Path(UPLOAD_DIR) / filename
+
+    candidates = [
+        UPLOAD_DIR / filename,
+        BASE_DIR / "uploads" / filename,
+        BASE_DIR.parent / "uploads" / filename,
+        Path("uploads") / filename,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 @app.get("/")
 async def read_index():
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/health")
+async def health_check():
+    gemini_ready = is_gemini_configured()
+    ffmpeg_ready = shutil.which("ffmpeg") is not None
+    piper_ready = shutil.which("piper") is not None
+    return {
+        "status": "ok" if gemini_ready else "degraded",
+        "gemini_configured": gemini_ready,
+        "ffmpeg_available": ffmpeg_ready,
+        "piper_available": piper_ready,
+        "upload_dir": str(UPLOAD_DIR),
+        "static_dir": str(STATIC_DIR),
+    }
 
 
 @app.post("/analyze-pdf")
@@ -559,7 +636,11 @@ async def analyze_pdf(
     summary_mode: str = Form("standard"),
 ):
     filename = Path(file.filename or "uploaded.pdf").name
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    if Path(filename).suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="Upload a PDF file.")
+
+    stored_filename = _safe_pdf_storage_name(filename)
+    file_path = UPLOAD_DIR / stored_filename
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -583,10 +664,15 @@ async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
     if not is_valid_arxiv_pdf_url(request.pdf_url):
         raise HTTPException(status_code=400, detail="Invalid arXiv PDF URL.")
 
+    url_arxiv_id = arxiv_id_from_pdf_url(request.pdf_url)
+    if not _arxiv_ids_match(url_arxiv_id or "", request.arxiv_id):
+        raise HTTPException(status_code=400, detail="The arXiv ID does not match the PDF URL.")
+
     try:
+        storage_arxiv_id = f"{request.arxiv_id}-{uuid4().hex[:12]}"
         pdf_path = download_arxiv_pdf(
             request.pdf_url,
-            request.arxiv_id,
+            storage_arxiv_id,
             target_dir=UPLOAD_DIR,
         )
     except ArxivServiceError as error:
@@ -595,7 +681,7 @@ async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
     try:
         return analyze_pdf_file(
             pdf_path,
-            pdf_path.name,
+            f"arxiv-{request.arxiv_id}.pdf",
             summary_mode=request.summary_mode,
         )
     except HTTPException:
@@ -636,6 +722,8 @@ async def create_video_script(
     record = get_analysis(analysis_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    if not is_gemini_configured():
+        raise HTTPException(status_code=503, detail=gemini_configuration_error())
 
     result = record.get("result", {})
     video_script = generate_video_script(result, slide_count=slide_count)
@@ -691,8 +779,12 @@ async def download_video(analysis_id: str):
         raise HTTPException(status_code=404, detail="Analysis not found")
 
     video = record.get("result", {}).get("video", {})
-    video_path = Path(video.get("video_path", ""))
-    if not video_path.exists():
+    video_path_value = video.get("video_path") if isinstance(video, dict) else ""
+    if not isinstance(video_path_value, str) or not video_path_value:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_path = Path(video_path_value)
+    if not video_path.is_file():
         raise HTTPException(status_code=404, detail="Video not found")
 
     return FileResponse(
@@ -811,10 +903,14 @@ async def download_analysis(analysis_id: str):
 
 
 @app.delete("/analyses/{analysis_id}")
-async def delete_saved_analysis(analysis_id: str):
-    if not delete_analysis(analysis_id):
+async def delete_saved_analysis(
+    analysis_id: str,
+    delete_files: bool = Query(True, description="Delete uploaded PDFs and generated video files with the history record."),
+):
+    deletion_result = delete_analysis(analysis_id, delete_files=delete_files)
+    if not deletion_result:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    return {"analysis_id": analysis_id, "deleted": True}
+    return deletion_result
 
 
 @app.get("/analyses/{analysis_id}")

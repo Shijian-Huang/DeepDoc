@@ -1,0 +1,9 @@
+fastapi==0.136.1
+google-genai==1.74.0
+pillow==12.2.0
+piper-tts==1.4.2
+PyMuPDF==1.27.2.3
+python-dotenv==1.2.2
+python-multipart==0.0.27
+tqdm==4.67.3
+uvicorn==0.46.0

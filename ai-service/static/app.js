@@ -949,7 +949,7 @@ async function deleteHistoryItem(item) {
   if (!analysisId) return;
 
   const displayTitle = item.paper_title || item.filename || "this analysis";
-  const confirmed = window.confirm(`Delete "${displayTitle}" from history?`);
+  const confirmed = window.confirm(`Delete "${displayTitle}" and its stored PDF / generated files from this server?`);
   if (!confirmed) return;
 
   setBusy(true, "Deleting saved analysis...");

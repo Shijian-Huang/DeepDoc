@@ -1,12 +1,17 @@
 import json
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
 
+BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(__file__).resolve().parent / "data" / "analyses"
+UPLOAD_DIR = BASE_DIR / "uploads"
+VIDEO_DIR = BASE_DIR / "data" / "videos"
+VIDEO_WORK_DIR = VIDEO_DIR / "work"
 ANALYSIS_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 
 
@@ -14,7 +19,7 @@ def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def save_analysis(filename: str, result: dict) -> dict:
+def save_analysis(filename: str, result: dict, source_pdf_path: str | Path | None = None) -> dict:
     _ensure_data_dir()
 
     analysis_id = uuid4().hex
@@ -25,24 +30,12 @@ def save_analysis(filename: str, result: dict) -> dict:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "result": result,
     }
+    if source_pdf_path:
+        record["source_pdf_path"] = str(source_pdf_path)
 
     record_path = DATA_DIR / f"{analysis_id}.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
 
-    return record
-
-
-def update_analysis_result(analysis_id: str, result: dict) -> Optional[dict]:
-    record = get_analysis(analysis_id)
-    if not record:
-        return None
-
-    result["analysis_id"] = analysis_id
-    record["result"] = result
-    record["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-    record_path = DATA_DIR / f"{analysis_id}.json"
-    record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     return record
 
 
@@ -90,17 +83,82 @@ def get_analysis(analysis_id: str) -> Optional[dict]:
         return None
 
 
-def delete_analysis(analysis_id: str) -> bool:
+def _path_inside(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(parent.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_unlink(path_value: object, allowed_dirs: list[Path]) -> Optional[str]:
+    if not path_value:
+        return None
+
+    path = Path(str(path_value))
+    if not path.exists() or not path.is_file():
+        return None
+    if not any(_path_inside(path, allowed_dir) for allowed_dir in allowed_dirs):
+        return None
+
+    path.unlink()
+    return str(path)
+
+
+def _safe_rmtree(path: Path, allowed_parent: Path) -> Optional[str]:
+    if not path.exists() or not path.is_dir():
+        return None
+    if not _path_inside(path, allowed_parent):
+        return None
+
+    shutil.rmtree(path)
+    return str(path)
+
+
+def _delete_associated_files(record: dict) -> list[str]:
+    deleted_paths: list[str] = []
+    source_pdf = _safe_unlink(record.get("source_pdf_path"), [UPLOAD_DIR])
+    if source_pdf:
+        deleted_paths.append(source_pdf)
+
+    result = record.get("result", {})
+    video = result.get("video", {}) if isinstance(result, dict) else {}
+    video_path = video.get("video_path") if isinstance(video, dict) else None
+    deleted_video = _safe_unlink(video_path, [VIDEO_DIR])
+    if deleted_video:
+        deleted_paths.append(deleted_video)
+
+    analysis_id = str(record.get("analysis_id") or result.get("analysis_id") or "")
+    if ANALYSIS_ID_RE.match(analysis_id):
+        work_dir = _safe_rmtree(VIDEO_WORK_DIR / analysis_id, VIDEO_WORK_DIR)
+        if work_dir:
+            deleted_paths.append(work_dir)
+
+    return deleted_paths
+
+
+def delete_analysis(analysis_id: str, delete_files: bool = True) -> Optional[dict]:
     _ensure_data_dir()
     if not ANALYSIS_ID_RE.match(analysis_id):
-        return False
+        return None
 
     record_path = DATA_DIR / f"{analysis_id}.json"
     if not record_path.exists():
-        return False
+        return None
+
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        record = {"analysis_id": analysis_id}
+
+    deleted_files = _delete_associated_files(record) if delete_files else []
 
     record_path.unlink()
-    return True
+    return {
+        "analysis_id": analysis_id,
+        "deleted": True,
+        "deleted_files": deleted_files,
+    }
 
 
 def save_video_script(analysis_id: str, video_script: dict) -> Optional[dict]:

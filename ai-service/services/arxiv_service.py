@@ -44,16 +44,20 @@ def _pdf_url_from_entry(entry: ElementTree.Element, arxiv_id: str) -> str:
 
 
 def is_valid_arxiv_pdf_url(url: str) -> bool:
+    return arxiv_id_from_pdf_url(url) is not None
+
+
+def arxiv_id_from_pdf_url(url: str) -> str | None:
     parsed = urlparse(str(url or "").strip())
     if parsed.scheme != "https":
-        return False
+        return None
     if parsed.netloc.lower() not in ARXIV_HOSTS:
-        return False
+        return None
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) < 2 or parts[0] != "pdf":
-        return False
-    arxiv_id = parts[1].removesuffix(".pdf")
-    return bool(ARXIV_ID_RE.match(arxiv_id))
+        return None
+    arxiv_id = "/".join(parts[1:]).removesuffix(".pdf")
+    return arxiv_id if ARXIV_ID_RE.match(arxiv_id) else None
 
 
 def safe_arxiv_pdf_filename(arxiv_id: str) -> str:
