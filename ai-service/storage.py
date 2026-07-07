@@ -51,10 +51,11 @@ def list_analyses() -> list[dict]:
 
         result = record.get("result", {})
         summary = result.get("document_summary", {})
+        source = result.get("source_metadata", {}) if isinstance(result.get("source_metadata"), dict) else {}
         analyses.append({
             "analysis_id": record.get("analysis_id"),
             "filename": record.get("filename"),
-            "paper_title": result.get("paper_title") or summary.get("title"),
+            "paper_title": source.get("title") or result.get("paper_title") or summary.get("title"),
             "created_at": record.get("created_at"),
             "summary_mode": result.get("summary_mode"),
             "processing_seconds": result.get("processing_seconds"),

@@ -88,6 +88,12 @@ def analyze_pdf_file(
     result["processing_seconds"] = round(time.perf_counter() - started_at, 2)
     if source_metadata:
         result["source_metadata"] = source_metadata
+        source_title = str(source_metadata.get("title") or "").strip()
+        if source_title:
+            result["paper_title"] = source_title
+            summary = result.get("document_summary")
+            if isinstance(summary, dict):
+                summary["title"] = source_title
     record = save_analysis(filename, result, source_pdf_path=Path(file_path))
     return record["result"]
 
@@ -352,14 +358,22 @@ def _markdown_references(references: object) -> str:
     return "\n".join(lines) if lines else "None extracted."
 
 
+def _preferred_record_title(record: dict, fallback: str = "Analysis") -> str:
+    result = record.get("result", {}) if isinstance(record.get("result"), dict) else {}
+    summary = result.get("document_summary", {}) if isinstance(result.get("document_summary"), dict) else {}
+    source = result.get("source_metadata", {}) if isinstance(result.get("source_metadata"), dict) else {}
+    return _markdown_text(
+        source.get("title")
+        or result.get("paper_title")
+        or summary.get("title")
+        or Path(record.get("filename") or fallback).stem
+    )
+
+
 def _analysis_markdown(record: dict, analysis_id: str) -> str:
     result = record.get("result", {})
     summary = result.get("document_summary", {}) if isinstance(result.get("document_summary"), dict) else {}
-    title = (
-        result.get("paper_title")
-        or summary.get("title")
-        or Path(record.get("filename") or "Analysis").stem
-    )
+    title = _preferred_record_title(record)
 
     lines = [
         f"# {_markdown_text(title)}",
@@ -418,7 +432,7 @@ def _slides_markdown(record: dict, analysis_id: str, include_frontmatter: bool =
     if not isinstance(script, dict) or not isinstance(script.get("scenes"), list) or not script["scenes"]:
         raise HTTPException(status_code=404, detail="Video script not found. Generate a script before downloading slides.")
 
-    title = _markdown_text(script.get("title") or result.get("paper_title") or Path(record.get("filename") or "Slides").stem)
+    title = _markdown_text(script.get("title") or _preferred_record_title(record, "Slides"))
     lines: list[str] = []
     if include_frontmatter:
         lines.extend([
@@ -469,7 +483,7 @@ def _slides_html(record: dict, analysis_id: str) -> str:
     if not isinstance(script, dict) or not isinstance(script.get("scenes"), list) or not script["scenes"]:
         raise HTTPException(status_code=404, detail="Video script not found. Generate a script before downloading slides.")
 
-    title = _markdown_text(script.get("title") or result.get("paper_title") or Path(record.get("filename") or "Slides").stem)
+    title = _markdown_text(script.get("title") or _preferred_record_title(record, "Slides"))
     slides: list[str] = []
     cover_meta = f"{len(script['scenes'])} slides"
     slides.append(f"""
@@ -904,12 +918,7 @@ async def create_video(analysis_id: str):
         )
 
     try:
-        summary = result.get("document_summary", {})
-        display_title = (
-            result.get("paper_title")
-            or summary.get("title")
-            or Path(record.get("filename") or "Research explainer").stem
-        )
+        display_title = _preferred_record_title(record, "Research explainer")
         video_result = generate_video_from_script(analysis_id, video_script, display_title=display_title)
     except VideoGenerationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

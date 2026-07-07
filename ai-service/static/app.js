@@ -450,7 +450,7 @@ function handleResultPanelClick(event) {
 function toggleOverview(button) {
   const card = button.closest(".summary-block");
   const expanded = card?.classList.toggle("is-expanded");
-  button.textContent = expanded ? "Show less" : "Show full summary";
+  button.textContent = expanded ? "Collapse" : "Read more";
 }
 
 function toggleList(button) {
@@ -523,12 +523,15 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
   document.body.classList.add("source-collapsed");
   const node = resultTemplate.content.cloneNode(true);
   const summary = result.document_summary || {};
+  const source = result.source_metadata || {};
   const analysisId = result.analysis_id;
-  const paperTitle = result.paper_title || summary.title || result.video_script?.title || fallbackFilename;
+  const paperTitle = source.title || result.paper_title || summary.title || result.video_script?.title || fallbackFilename;
   const summaryText = summary.summary || "No summary returned.";
 
   node.querySelector('[data-field="mode"]').textContent = formatMode(result.summary_mode);
-  node.querySelector('[data-field="title"]').textContent = paperTitle;
+  const titleElement = node.querySelector('[data-field="title"]');
+  titleElement.textContent = paperTitle;
+  titleElement.title = paperTitle;
   node.querySelector('[data-field="meta"]').textContent = formatMeta(result);
   node.querySelector('[data-field="summary"]').textContent = summaryText;
   node.querySelector('[data-field="overviewMeta"]').textContent = formatOverviewMeta(result, summaryText);

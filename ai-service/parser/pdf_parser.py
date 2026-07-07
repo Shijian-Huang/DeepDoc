@@ -46,6 +46,10 @@ def _looks_like_publication_header(value: str) -> bool:
         return True
     if re.search(r"\b\d+\s*\(\d{4}\)\s*\d+\b", cleaned):
         return True
+    if re.search(r"\bvol\.?\s*(?:\?+|\d+)\b.*\bno\.?\s*(?:\?+|\d+)\b", cleaned, re.IGNORECASE):
+        return True
+    if re.search(r"\(20\?\?\)", cleaned):
+        return True
     return False
 
 
