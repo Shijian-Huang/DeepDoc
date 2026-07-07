@@ -8,6 +8,7 @@ import html
 import json
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -22,7 +23,13 @@ from services.arxiv_service import (
     search_arxiv,
 )
 from storage import delete_analysis, get_analysis, list_analyses, save_analysis, save_video_result, save_video_script
-from video_generator import VideoGenerationError, generate_video_from_script
+from video_generator import (
+    PIPER_BIN,
+    PIPER_MODEL,
+    TTS_PROVIDER,
+    VideoGenerationError,
+    generate_video_from_script,
+)
 
 app = FastAPI(
     title="DeepDoc",
@@ -45,8 +52,7 @@ class ArxivAnalyzeRequest(BaseModel):
 
 
 def analyze_pdf_file(file_path: str | Path, filename: str, summary_mode: str = "standard") -> dict:
-    if not is_gemini_configured():
-        raise HTTPException(status_code=503, detail=gemini_configuration_error())
+    _ensure_gemini_configured()
 
     started_at = time.perf_counter()
     submitted_at = datetime.now(timezone.utc)
@@ -62,6 +68,53 @@ def analyze_pdf_file(file_path: str | Path, filename: str, summary_mode: str = "
     result["processing_seconds"] = round(time.perf_counter() - started_at, 2)
     record = save_analysis(filename, result, source_pdf_path=Path(file_path))
     return record["result"]
+
+
+def _ensure_gemini_configured() -> None:
+    if not is_gemini_configured():
+        raise HTTPException(status_code=503, detail=gemini_configuration_error())
+
+
+def _remove_file_if_exists(path: Path) -> None:
+    try:
+        if path.exists() and path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _tts_health() -> dict:
+    provider = TTS_PROVIDER
+    if provider == "piper":
+        venv_piper = Path(sys.executable).parent / "piper"
+        piper_binary_ready = shutil.which(PIPER_BIN) is not None or venv_piper.exists()
+        model_ready = Path(PIPER_MODEL).expanduser().exists()
+        return {
+            "provider": provider,
+            "ready": piper_binary_ready and model_ready,
+            "piper_binary_available": piper_binary_ready,
+            "piper_model_available": model_ready,
+        }
+    if provider == "say":
+        say_ready = shutil.which("say") is not None
+        return {
+            "provider": provider,
+            "ready": say_ready,
+            "say_available": say_ready,
+        }
+    if provider == "openai":
+        import os
+        openai_ready = bool(os.getenv("OPENAI_API_KEY"))
+        return {
+            "provider": provider,
+            "ready": openai_ready,
+            "openai_api_key_configured": openai_ready,
+        }
+    return {
+        "provider": provider,
+        "ready": False,
+        "error": "Unknown TTS provider.",
+    }
 
 
 def _download_timestamp(record: dict) -> str:
@@ -619,12 +672,14 @@ async def read_index():
 async def health_check():
     gemini_ready = is_gemini_configured()
     ffmpeg_ready = shutil.which("ffmpeg") is not None
-    piper_ready = shutil.which("piper") is not None
+    tts_health = _tts_health()
+    mp4_ready = ffmpeg_ready and bool(tts_health.get("ready"))
     return {
-        "status": "ok" if gemini_ready else "degraded",
+        "status": "ok" if gemini_ready and mp4_ready else "degraded",
         "gemini_configured": gemini_ready,
         "ffmpeg_available": ffmpeg_ready,
-        "piper_available": piper_ready,
+        "tts": tts_health,
+        "mp4_ready": mp4_ready,
         "upload_dir": str(UPLOAD_DIR),
         "static_dir": str(STATIC_DIR),
     }
@@ -635,6 +690,8 @@ async def analyze_pdf(
     file: UploadFile = File(...),
     summary_mode: str = Form("standard"),
 ):
+    _ensure_gemini_configured()
+
     filename = Path(file.filename or "uploaded.pdf").name
     if Path(filename).suffix.lower() != ".pdf":
         raise HTTPException(status_code=400, detail="Upload a PDF file.")
@@ -645,7 +702,11 @@ async def analyze_pdf(
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    return analyze_pdf_file(file_path, filename, summary_mode=summary_mode)
+    try:
+        return analyze_pdf_file(file_path, filename, summary_mode=summary_mode)
+    except Exception:
+        _remove_file_if_exists(file_path)
+        raise
 
 
 @app.get("/arxiv/search")
@@ -661,6 +722,8 @@ async def arxiv_search(
 
 @app.post("/arxiv/analyze")
 async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
+    _ensure_gemini_configured()
+
     if not is_valid_arxiv_pdf_url(request.pdf_url):
         raise HTTPException(status_code=400, detail="Invalid arXiv PDF URL.")
 
@@ -685,8 +748,10 @@ async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
             summary_mode=request.summary_mode,
         )
     except HTTPException:
+        _remove_file_if_exists(pdf_path)
         raise
     except Exception as error:
+        _remove_file_if_exists(pdf_path)
         raise HTTPException(status_code=500, detail=f"Analysis failed: {error}") from error
 
 

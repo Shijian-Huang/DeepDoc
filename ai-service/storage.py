@@ -120,6 +120,12 @@ def _delete_associated_files(record: dict) -> list[str]:
     source_pdf = _safe_unlink(record.get("source_pdf_path"), [UPLOAD_DIR])
     if source_pdf:
         deleted_paths.append(source_pdf)
+    elif not record.get("source_pdf_path"):
+        legacy_pdf = _legacy_pdf_path(record)
+        if legacy_pdf and not _legacy_pdf_is_shared(record, legacy_pdf):
+            deleted_legacy_pdf = _safe_unlink(legacy_pdf, [UPLOAD_DIR])
+            if deleted_legacy_pdf:
+                deleted_paths.append(deleted_legacy_pdf)
 
     result = record.get("result", {})
     video = result.get("video", {}) if isinstance(result, dict) else {}
@@ -135,6 +141,32 @@ def _delete_associated_files(record: dict) -> list[str]:
             deleted_paths.append(work_dir)
 
     return deleted_paths
+
+
+def _legacy_pdf_path(record: dict) -> Optional[Path]:
+    filename = Path(record.get("filename") or "").name
+    if not filename:
+        return None
+    path = UPLOAD_DIR / filename
+    return path if path.exists() else None
+
+
+def _legacy_pdf_is_shared(record: dict, pdf_path: Path) -> bool:
+    current_id = str(record.get("analysis_id") or "")
+    current_filename = Path(record.get("filename") or "").name
+    for record_path in DATA_DIR.glob("*.json"):
+        try:
+            other_record = json.loads(record_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if str(other_record.get("analysis_id") or "") == current_id:
+            continue
+        other_source = other_record.get("source_pdf_path")
+        if other_source and Path(str(other_source)).resolve(strict=False) == pdf_path.resolve(strict=False):
+            return True
+        if not other_source and Path(other_record.get("filename") or "").name == current_filename:
+            return True
+    return False
 
 
 def delete_analysis(analysis_id: str, delete_files: bool = True) -> Optional[dict]:

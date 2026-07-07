@@ -53,6 +53,7 @@ Before deploying, verify:
 
 - `GEMINI_API_KEY` is configured in the server environment.
 - `/health` reports `gemini_configured: true`.
+- If MP4 generation is enabled, `/health` also reports `mp4_ready: true`.
 - The server has write access to `ai-service/uploads/` and `ai-service/data/`.
 - Disk retention policy is acceptable for uploaded PDFs and generated videos.
 - `ffmpeg` is installed if MP4 generation is enabled.
