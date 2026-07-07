@@ -551,7 +551,6 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
 
   renderList(node.querySelector('[data-field="keyIdeas"]'), summary.key_ideas || [], {variant: "ideas", limit: 5});
   renderList(node.querySelector('[data-field="contributions"]'), summary.contributions || [], {variant: "contributions", limit: 5});
-  renderOptionalEvidenceSections(node.querySelector('[data-field="optionalEvidenceSections"]'), summary);
   renderEvidenceViewer(node.querySelector('[data-field="evidence"]'), summary.evidence || [], {
     emptyText: "No evidence claims returned.",
   });
@@ -1056,31 +1055,6 @@ function listCopyText(list) {
   return [...list.querySelectorAll(":scope > li")]
     .map((item, index) => `${index + 1}. ${item.childNodes[0]?.textContent?.trim() || item.textContent.trim()}`)
     .join("\n");
-}
-
-function renderOptionalEvidenceSections(container, summary) {
-  container.innerHTML = "";
-  const sections = [
-    ["Limitations", summary.limitations],
-    ["Discussion Questions", summary.discussion_questions || summary.discussionQuestions],
-    ["Reviewer Questions", summary.reviewer_questions || summary.reviewerQuestions],
-  ].filter(([, items]) => Array.isArray(items) && items.length);
-
-  if (!sections.length) {
-    container.hidden = true;
-    return;
-  }
-
-  container.hidden = false;
-  sections.forEach(([title, items]) => {
-    const article = document.createElement("article");
-    article.innerHTML = `
-      <h3>${escapeHtml(title)}</h3>
-      <ol></ol>
-    `;
-    renderList(article.querySelector("ol"), items);
-    container.appendChild(article);
-  });
 }
 
 function renderEvidenceViewer(container, evidence, options = {}) {

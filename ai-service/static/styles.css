@@ -1494,7 +1494,6 @@ body.has-result .tab-panel.active {
 
 .summary-grid ul,
 .summary-grid ol,
-.optional-analysis-grid ol,
 [data-field="evidence"],
 [data-field="sources"],
 [data-field="videoScript"] {
@@ -1546,7 +1545,6 @@ body.has-result .tab-panel.active {
 body.has-result .summary-block p,
 body.has-result .summary-grid ul,
 body.has-result .summary-grid ol,
-body.has-result .optional-analysis-grid ol,
 body.has-result [data-field="evidence"],
 body.has-result [data-field="sources"],
 body.has-result [data-panel="references"] ol,
@@ -1557,7 +1555,6 @@ body.has-result [data-field="videoScript"] {
 
 .summary-grid ul::-webkit-scrollbar,
 .summary-grid ol::-webkit-scrollbar,
-.optional-analysis-grid ol::-webkit-scrollbar,
 .summary-block p::-webkit-scrollbar,
 [data-field="evidence"]::-webkit-scrollbar,
 [data-field="sources"]::-webkit-scrollbar,
@@ -1567,7 +1564,6 @@ body.has-result [data-field="videoScript"] {
 
 .summary-grid ul::-webkit-scrollbar-thumb,
 .summary-grid ol::-webkit-scrollbar-thumb,
-.optional-analysis-grid ol::-webkit-scrollbar-thumb,
 .summary-block p::-webkit-scrollbar-thumb,
 [data-field="evidence"]::-webkit-scrollbar-thumb,
 [data-field="sources"]::-webkit-scrollbar-thumb,
@@ -1578,7 +1574,6 @@ body.has-result [data-field="videoScript"] {
 
 .summary-grid ul::-webkit-scrollbar-track,
 .summary-grid ol::-webkit-scrollbar-track,
-.optional-analysis-grid ol::-webkit-scrollbar-track,
 .summary-block p::-webkit-scrollbar-track,
 [data-field="evidence"]::-webkit-scrollbar-track,
 [data-field="sources"]::-webkit-scrollbar-track,
@@ -1593,7 +1588,6 @@ body.has-result [data-field="videoScript"] {
 }
 
 .summary-grid,
-.optional-analysis-grid,
 .evidence-layout {
   display: grid;
   grid-template-columns: 1fr;
@@ -1639,10 +1633,6 @@ body.has-result [data-field="videoScript"] {
 .copy-button:hover {
   background: var(--panel-solid);
   color: var(--ink);
-}
-
-.optional-analysis-grid[hidden] {
-  display: none;
 }
 
 ul,
@@ -1701,11 +1691,6 @@ ol {
 .summary-grid li[data-variant="contributions"] {
   background: rgba(255, 249, 231, 0.78);
   font-weight: 650;
-}
-
-.optional-analysis-grid li::marker {
-  color: var(--accent);
-  font-weight: 700;
 }
 
 .paper-info-card [data-field="paperInfo"] {
@@ -2213,7 +2198,6 @@ li {
   .arxiv-search-form,
   .arxiv-filter-row,
   .summary-grid,
-  .optional-analysis-grid,
   .evidence-layout {
     grid-template-columns: 1fr;
   }

@@ -272,12 +272,6 @@ def normalize_research_summary_result(result: dict, summary_mode: str) -> dict:
     )
     normalized["key_ideas"] = key_ideas
     normalized["contributions"] = contributions
-    normalized["limitations"] = _dedupe_text_list(_as_text_list(normalized.get("limitations")), limit=4)
-    normalized["discussion_questions"] = _dedupe_text_list(
-        _as_text_list(normalized.get("discussion_questions") or normalized.get("discussionQuestions")),
-        limit=4,
-    )
-
     evidence_items: list[dict] = []
     evidence = normalized.get("evidence")
     if isinstance(evidence, list):
@@ -398,17 +392,12 @@ def build_research_summary_prompt(
       or comparisons against baselines, choose experiment or results pages rather than the abstract.
     - Each evidence claim should be anchored to the most specific section and page range available in the paper text.
     - Include 4-6 evidence items when enough grounded claims are available.
-    - Include 2-4 limitations if the paper states clear boundaries, assumptions, threats to validity, or failure cases.
-    - Include 2-4 discussion_questions that would help a reader evaluate the paper in a reading group.
-
     Return ONLY valid JSON:
     {{
       "summary": "...",
       "summary_word_count": 0,
       "key_ideas": ["...", "..."],
       "contributions": ["...", "..."],
-      "limitations": ["...", "..."],
-      "discussion_questions": ["...", "..."],
       "evidence": [
         {{
           "claim": "...",
@@ -451,8 +440,6 @@ def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard
             "summary_word_count": 0,
             "key_ideas": [],
             "contributions": [],
-            "limitations": [],
-            "discussion_questions": [],
             "evidence": [],
             "error": error.doc
         }

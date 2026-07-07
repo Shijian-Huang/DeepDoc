@@ -385,15 +385,6 @@ def _analysis_markdown(record: dict, analysis_id: str) -> str:
         _markdown_list(summary.get("contributions")),
     ]
 
-    optional_sections = [
-        ("Limitations", summary.get("limitations")),
-        ("Discussion Questions", summary.get("discussion_questions") or summary.get("discussionQuestions")),
-        ("Reviewer Questions", summary.get("reviewer_questions") or summary.get("reviewerQuestions")),
-    ]
-    for heading, items in optional_sections:
-        if isinstance(items, list) and items:
-            lines.extend(["", f"## {heading}", "", _markdown_list(items)])
-
     lines.extend([
         "",
         "## Evidence",
