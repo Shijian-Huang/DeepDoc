@@ -37,28 +37,50 @@ def require_gemini_api_key() -> None:
 
 SUMMARY_MODE_INSTRUCTIONS = {
     "paragraph": (
-        "Write exactly one concise narrative overview paragraph. The summary field must be 80-120 words."
+        "Task: Should I read this paper? "
+        "Optimize for fast understanding. "
+        "The reader should decide whether the paper is worth reading within 30 seconds. "
+        "Write a concise Research Snapshot in 2 short paragraphs, 100-150 words total. "
+        "Paragraph 1 should explain the paper's problem and why it matters. "
+        "Paragraph 2 should explain the core idea or approach and the main takeaway. "
+        "Avoid implementation details, background discussion, and excessive methodology."
     ),
     "standard": (
-        "Write 1-2 focused narrative overview paragraphs. The summary field must be 200-250 words. "
-        "Do not write fewer than 180 words."
+        "Task: Help me understand this paper. "
+        "Optimize for comprehension. "
+        "The reader should understand the paper without reading the original PDF. "
+        "Write the overview in 4 well-balanced paragraphs, 220-300 words total. "
+        "Structure the summary as: 1. context and motivation; 2. the problem being addressed; "
+        "3. the proposed approach and key findings; 4. practical implications and final takeaway. "
+        "The summary should read like an executive brief for a technical reader."
     ),
     "one_page": (
-        "Write 3-4 well-developed narrative overview paragraphs. The summary field must be 350-420 words. "
-        "Do not write fewer than 320 words."
+        "Task: Help me study this paper. "
+        "Optimize for study. "
+        "The reader should feel prepared to discuss the paper in a research meeting after reading this summary. "
+        "Write a detailed research brief in 5-6 structured paragraphs, 450-700 words total. "
+        "Cover context, research problem, technical approach, major findings, limitations if discussed, "
+        "and broader implications and takeaway. Include enough technical detail for readers who want "
+        "to understand the paper before reading the full text, but avoid reproducing the paper section by section."
     ),
 }
 
 SUMMARY_MODE_MIN_WORDS = {
-    "paragraph": 80,
-    "standard": 180,
-    "one_page": 320,
+    "paragraph": 100,
+    "standard": 220,
+    "one_page": 450,
 }
 
 SUMMARY_MODE_TARGET_WORDS = {
-    "paragraph": "80-120",
-    "standard": "200-250",
-    "one_page": "350-420",
+    "paragraph": "100-150",
+    "standard": "220-300",
+    "one_page": "450-700",
+}
+
+SUMMARY_MODE_TARGET_PARAGRAPHS = {
+    "paragraph": 2,
+    "standard": 4,
+    "one_page": 5,
 }
 
 def wait_for_rate_limit():
@@ -183,6 +205,91 @@ def count_words(text: str) -> int:
     return len(re.findall(r"\b[\w'-]+\b", text))
 
 
+def _normalize_summary_text(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+
+    raw_paragraphs = re.split(r"\n\s*\n+", text)
+    paragraphs: list[str] = []
+    for paragraph in raw_paragraphs:
+        cleaned = re.sub(r"[ \t]+", " ", paragraph)
+        cleaned = re.sub(r"\n+", " ", cleaned).strip()
+        if cleaned:
+            paragraphs.append(cleaned)
+
+    if len(paragraphs) <= 1:
+        return re.sub(r"\s+", " ", text).strip()
+
+    return "\n\n".join(paragraphs)
+
+
+def _split_sentences(text: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not cleaned:
+        return []
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'])", cleaned)
+    return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def _chunk_sentences(sentences: list[str], paragraph_count: int) -> list[str]:
+    if paragraph_count <= 1 or len(sentences) < paragraph_count:
+        return [" ".join(sentences).strip()] if sentences else []
+
+    chunks: list[str] = []
+    total = len(sentences)
+    for index in range(paragraph_count):
+        start = round(index * total / paragraph_count)
+        end = round((index + 1) * total / paragraph_count)
+        chunk = " ".join(sentences[start:end]).strip()
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def _chunk_words(text: str, paragraph_count: int) -> list[str]:
+    words = re.findall(r"\S+", str(text or ""))
+    if paragraph_count <= 1 or len(words) < paragraph_count * 12:
+        return [re.sub(r"\s+", " ", text).strip()] if text else []
+
+    chunks: list[str] = []
+    total = len(words)
+    for index in range(paragraph_count):
+        start = round(index * total / paragraph_count)
+        end = round((index + 1) * total / paragraph_count)
+        chunk = " ".join(words[start:end]).strip()
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def _enforce_summary_paragraphs(summary: str, summary_mode: str) -> str:
+    target_paragraphs = SUMMARY_MODE_TARGET_PARAGRAPHS.get(summary_mode, 4)
+    existing_paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n+", summary)
+        if paragraph.strip()
+    ]
+    if len(existing_paragraphs) >= target_paragraphs:
+        return "\n\n".join(existing_paragraphs)
+
+    sentences = _split_sentences(" ".join(existing_paragraphs) if existing_paragraphs else summary)
+    flat_summary = " ".join(existing_paragraphs) if existing_paragraphs else summary
+
+    paragraph_count = target_paragraphs
+    if summary_mode == "one_page" and len(sentences) >= 12:
+        paragraph_count = 6
+
+    paragraphs = (
+        _chunk_sentences(sentences, paragraph_count)
+        if len(sentences) >= target_paragraphs
+        else _chunk_words(flat_summary, paragraph_count)
+    )
+    if len(paragraphs) < target_paragraphs:
+        return summary
+    return "\n\n".join(paragraphs)
+
+
 def _as_text_list(value: Any) -> list[str]:
     if isinstance(value, list):
         items = value
@@ -260,7 +367,8 @@ def _normalize_pages(value: Any) -> list[int]:
 
 def normalize_research_summary_result(result: dict, summary_mode: str) -> dict:
     normalized = dict(result or {})
-    summary = re.sub(r"\s+", " ", str(normalized.get("summary") or "")).strip()
+    summary = _normalize_summary_text(normalized.get("summary"))
+    summary = _enforce_summary_paragraphs(summary, summary_mode)
     normalized["summary"] = summary
     normalized["summary_word_count"] = count_words(summary)
 
@@ -370,8 +478,12 @@ def build_research_summary_prompt(
 
     Summary mode: {summary_mode}
     Length requirement: {length_instruction}
+    Treat the selected mode as a distinct reader task, not as a short/medium/long version of the same summary.
+    The mode's task and optimization goal are more important than merely hitting a word count.
     The length requirement applies only to the "summary" field.
     Do not count key_ideas, contributions, references, evidence, or summary_word_count toward the word count.
+    Do not generate one continuous block of text. Use well-balanced paragraphs with clear logical progression.
+    Each paragraph should focus on one primary purpose.
     {retry_instruction}
 
     Information architecture:
@@ -576,49 +688,49 @@ def normalize_video_scene(scene: dict) -> None:
 def build_video_scene_roles(slide_count: int) -> list[str]:
     profiles = {
         5: [
-            "surprising_finding",
+            "hook",
             "problem",
-            "method",
-            "strongest_evidence",
+            "core_idea",
+            "implication",
             "takeaway",
         ],
         8: [
-            "surprising_finding",
+            "hook",
             "problem",
             "method_overview",
-            "technical_insight",
-            "key_evidence",
-            "comparison",
-            "boundary",
+            "core_idea",
+            "key_finding",
+            "evidence",
+            "limitation",
             "takeaway",
         ],
         10: [
-            "surprising_finding",
+            "hook",
             "problem",
             "why_it_matters",
+            "core_idea",
             "method_overview",
-            "technical_insight",
-            "key_evidence",
-            "results",
-            "comparison",
-            "boundary",
+            "key_finding",
+            "evidence",
+            "limitation",
+            "implication",
             "takeaway",
         ],
         15: [
-            "title",
-            "surprising_finding",
+            "hook",
             "problem",
             "why_it_matters",
+            "core_idea",
             "method_overview",
-            "technical_insight",
+            "method",
             "mechanism",
             "example",
-            "key_evidence",
-            "results",
+            "key_finding",
+            "evidence",
             "comparison",
-            "boundary",
+            "supporting_detail",
+            "limitation",
             "implication",
-            "design_principle",
             "takeaway",
         ],
     }
@@ -643,36 +755,32 @@ def video_slide_profile(slide_count: int) -> dict[str, str]:
             "name": "brief",
             "duration_range": "60-85",
             "evidence_rule": "Use 2-4 evidence-backed scenes. Reuse no evidence claim unless it is the strongest evidence.",
-            "structure_rule": "Compress ruthlessly: hook, problem, method, strongest evidence, takeaway.",
+            "structure_rule": "Compress ruthlessly into a story: hook, problem, core insight, implication, takeaway. Skip implementation detail unless it is the story.",
         }
     if slide_count <= 8:
         return {
             "name": "balanced",
             "duration_range": "95-130",
             "evidence_rule": "Use 4-6 evidence-backed scenes. Reuse the strongest evidence at most once.",
-            "structure_rule": "Cover the paper arc without lingering: problem, method, technical insight, evidence, comparison, boundary, takeaway.",
+            "structure_rule": "Build a compact talk arc: hook, problem, method, core idea, finding, evidence, limitation, takeaway. Each scene must introduce a new beat.",
         }
     if slide_count <= 10:
         return {
             "name": "deep dive",
             "duration_range": "130-175",
             "evidence_rule": "Use 5-7 evidence-backed scenes. Prefer different sections for method, results, comparison, and boundary slides.",
-            "structure_rule": "Use the standard research-explainer arc with one slide per distinct idea. Do not split one claim across multiple slides.",
+            "structure_rule": "Use a research-group presentation arc. Explain why the paper matters, then the core idea, method, finding, evidence, limitation, implication, and takeaway.",
         }
     return {
         "name": "lecture",
         "duration_range": "190-250",
         "evidence_rule": "Use 8-11 evidence-backed scenes. Reuse the same evidence claim at most twice, and only when connecting setup to takeaway.",
-        "structure_rule": "Treat this as a mini lecture: every 2-3 slides must introduce a new section, mechanism, experiment, result, or design implication.",
+        "structure_rule": "Treat this as a mini conference talk. Add method, mechanism, example, comparison, limitation, and implication only when each beat moves the story forward.",
     }
 
 
 def max_video_evidence_reuse(slide_count: int) -> int:
     return 1 if slide_count <= 10 else 2
-
-
-def _roles_without_duplicates(roles: list[str]) -> str:
-    return "|".join(dict.fromkeys(roles))
 
 
 def make_fallback_video_scene(index: int, role: str, analysis_result: dict, evidence: list[dict]) -> dict:
@@ -768,17 +876,25 @@ VIDEO_EVIDENCE_STOPWORDS = {
 
 
 ROLE_EVIDENCE_SECTIONS = {
+    "hook": {"abstract", "introduction", "experiment", "results", "conclusion"},
     "surprising_finding": {"experiment", "results", "abstract"},
     "strongest_evidence": {"experiment", "results", "abstract"},
+    "evidence": {"experiment", "results", "method", "abstract"},
+    "key_finding": {"experiment", "results", "abstract", "conclusion"},
     "key_evidence": {"experiment", "results"},
     "results": {"experiment", "results"},
     "problem": {"introduction", "method", "experiment", "results"},
     "why_it_matters": {"abstract", "introduction", "method"},
+    "core_idea": {"abstract", "introduction", "method"},
     "method": {"abstract", "introduction", "method"},
     "method_overview": {"abstract", "introduction", "method"},
     "technical_insight": {"abstract", "method"},
     "mechanism": {"abstract", "method"},
+    "example": {"method", "experiment", "results", "abstract"},
     "comparison": {"abstract", "introduction", "method", "experiment", "results"},
+    "limitation": {"introduction", "method", "experiment", "results", "conclusion", "abstract"},
+    "implication": {"abstract", "introduction", "method", "experiment", "results", "conclusion"},
+    "supporting_detail": {"abstract", "introduction", "method", "experiment", "results", "conclusion"},
     "boundary": {"introduction", "method", "experiment", "results", "conclusion", "abstract"},
     "design_principle": {"abstract", "method", "conclusion"},
     "takeaway": {"abstract", "experiment", "results", "conclusion"},
@@ -993,46 +1109,81 @@ def generate_video_script(analysis_result: dict, slide_count: int = 10):
     duration_bounds = [int(value) for value in re.findall(r"\d+", duration_range)]
     target_duration = sum(duration_bounds[:2]) // 2 if len(duration_bounds) >= 2 else max(60, slide_count * 15)
     evidence_reuse_limit = max_video_evidence_reuse(slide_count)
-    allowed_roles = _roles_without_duplicates(scene_roles)
+    allowed_role_set = set(scene_roles)
 
     prompt = f"""
-    You are converting a research paper analysis into a short research explainer video script.
+    You are converting a research paper analysis into a research presentation deck.
     Only use information from the provided analysis. Do not invent details.
 
-    Create a {duration_range} second {slide_profile["name"]} video with exactly {slide_count} scenes.
-    Do not simply restate the summary. The video should answer:
-    "What are the 3-5 things a viewer should remember from this paper?"
+    Create a {duration_range} second {slide_profile["name"]} presentation with exactly {slide_count} slides.
+    The output should feel like a conference talk or research group presentation, not like a paper summary divided into pages.
 
-    First plan the video with these scene roles, then fill each scene in order:
+    Required narrative roles, in order:
     {json.dumps(scene_roles, ensure_ascii=False)}
 
     Slide-count strategy:
     - {slide_profile["structure_rule"]}
     - {slide_profile["evidence_rule"]}
 
-    Requirements:
-    - Each scene must have one sharp takeaway, not a mini-summary.
-    - At least half of the scenes should include an evidence object copied or paraphrased from the Evidence list when suitable support exists.
-    - Evidence may be section-level support for an explainer video; it does not need to prove every word on the slide.
+    Planning step:
+    - First create deck_plan before writing slides.
+    - deck_plan must contain one object per slide with: slide_number, role, question, purpose, takeaway.
+    - The plan must show how the story moves forward. Do not create two slides with the same purpose.
+    - Use the role sequence above, but adapt the angle to the specific paper.
+
+    Presentation narrative rules:
+    - Do not simply summarize the paper slide by slide.
+    - Transform the paper into an engaging presentation for the selected audience.
+    - Each slide must answer one clear question, such as:
+      What is surprising?
+      What problem does the paper solve?
+      Why should the audience care?
+      What is the core technical idea?
+      What evidence supports it?
+      What are the limitations?
+      What should the audience remember?
+    - Each slide must move the story forward. Avoid repeating the same idea in different wording.
+    - Prefer concrete findings over abstract statements.
+    - Avoid generic bullets like "Machine learning is important" or "Further research is needed."
+    - Prefer paper-specific claims, for example: "A change in an external API can silently break downstream ML statistics pipelines."
+    - Each slide needs one memorable takeaway.
+    - The heading should be presentation-style, not section-title style. Avoid headings like "Method", "Results", or "Conclusion" unless paired with a specific claim.
+    - Slide 1 must be a strong hook explaining why the paper matters. It should not start with a generic overview.
+    - The final slide must be a durable lesson or takeaway, not a recap of previous bullets.
+
+    Slide writing rules:
+    - Each slide has 1 strong title.
+    - Each slide has 2-3 bullets maximum.
+    - Each bullet must be short, concrete, and useful as slide text.
+    - Voiceover should explain the slide naturally in presentation language.
+    - Do not use the same phrase or claim across multiple slide headings.
+    - Do not stretch short decks by adding filler. Short decks should focus on hook → problem → insight → implication → takeaway.
+    - Longer decks may include method, mechanism, evidence, limitations, comparison, and future implications, but only when each adds a new narrative beat.
+
+    Evidence rules:
+    - At least half of the slides should include an evidence object copied or paraphrased from the Evidence list when suitable support exists.
+    - Evidence should ground the slide, but the slide must still read like a presentation, not like a citation list.
+    - Evidence may be section-level support; it does not need to prove every word on the slide.
     - If no available evidence reasonably supports a scene, set evidence to null instead of attaching a weak or unrelated claim.
-    - Do not reuse the same evidence claim in more than {evidence_reuse_limit} scene(s).
-    - Match each scene's evidence broadly to its role: method slides need method/framework evidence; result slides need experiment/results evidence; comparison slides need comparison/taxonomy evidence.
+    - Do not reuse the same evidence claim in more than {evidence_reuse_limit} slide(s).
+    - Match each slide's evidence broadly to its role: method slides need method/framework evidence; finding/evidence slides need experiment/results evidence; limitation/implication slides need conclusion or boundary evidence.
     - Evidence claims must be complete sentences. Never output a truncated excerpt.
-    - Scene 1 or Scene 2 must use the Strongest evidence unless it is empty.
-    - If the strongest evidence says LLMs outperform commercial tools, make that the hook.
-    - Scene 1 heading should sound like a surprising result, not a broad topic. For example: "The Surprising Result", "The Result That Matters", or a short domain-specific version of the strongest evidence.
+    - Slide 1 or Slide 2 should use the Strongest evidence when it supports the hook or problem.
     - Prefer claims with page numbers when available.
-    - Bullets must be short slide text, 3-8 words each.
-    - Voiceover should be natural, explanatory, and specific to this paper.
+
+    Safety and specificity:
+    - Avoid generic hype like "transforming every industry" unless directly supported.
+    - Do not turn a listed example into a causal claim.
+    - If the paper lists or compares models, say "the paper compares/lists models such as..." not "the shift is driven by..."
+    - Do not claim a model, method, or factor drives a field-wide change unless the evidence explicitly says so.
+    - Prefer careful wording such as "the paper compares", "the paper classifies", "can be fine-tuned", or "open-source models allow researchers to adapt..."
+    - Avoid consultant-style endings such as "monitor, mitigate, innovate".
+    - If a paper has no explicit risk, limitation, or future-work evidence, use limitation/implication to describe a supported boundary or design implication instead of inventing a risk.
+
+    Visual rules:
     - visual_note must describe a text-renderable slide layout only: title emphasis, short bullets, simple comparison labels, or a clean takeaway card.
     - Do not request graphs, charts, plots, tables, Venn diagrams, icons, animations, or illustrations unless the information can be represented as plain text bullets.
-    - Avoid generic hype like "transforming every industry" unless directly supported.
-    - Do not turn a listed example into a causal claim. If the paper lists or compares models, say "the paper compares/lists models such as..." not "the shift is driven by..."
-    - Do not claim a model, method, or factor drives a field-wide change unless the evidence explicitly says so.
-    - For technical_insight, prefer careful wording such as "the paper compares", "the paper classifies", "can be fine-tuned", or "open-source models allow researchers to adapt..."
-    - Avoid consultant-style endings such as "monitor, mitigate, innovate".
-    - If a paper has no explicit risk, limitation, or future-work evidence, use the boundary/design_principle roles to describe a supported boundary or design implication instead of inventing a risk.
-    - The final scene should synthesize the paper's own main contribution and strongest evidence. Do not introduce a new topic.
+
     Use the provided paper title as the script title when available.
 
     Return ONLY valid JSON:
@@ -1040,10 +1191,19 @@ def generate_video_script(analysis_result: dict, slide_count: int = 10):
       "title": "...",
       "duration_seconds": {target_duration},
       "audience": "software engineers and research readers",
+      "deck_plan": [
+        {{
+          "slide_number": 1,
+          "role": "hook",
+          "question": "What is surprising?",
+          "purpose": "...",
+          "takeaway": "..."
+        }}
+      ],
       "scenes": [
         {{
           "scene_number": 1,
-          "role": "{allowed_roles}",
+          "role": "hook",
           "heading": "...",
           "bullets": ["...", "..."],
           "voiceover": "...",
@@ -1098,7 +1258,9 @@ def generate_video_script(analysis_result: dict, slide_count: int = 10):
             used_evidence_keys: set[str] = set()
             for index, scene in enumerate(cleaned_scenes, start=1):
                 scene["scene_number"] = index
-                scene.setdefault("role", default_roles[min(index - 1, len(default_roles) - 1)])
+                role = str(scene.get("role") or "").strip()
+                if role not in allowed_role_set:
+                    scene["role"] = default_roles[min(index - 1, len(default_roles) - 1)]
                 if index in {1, 2} and strongest_evidence:
                     scene.setdefault("evidence", strongest_evidence)
                 _clean_video_scene_evidence(scene, evidence, used_evidence_keys)
@@ -1108,6 +1270,15 @@ def generate_video_script(analysis_result: dict, slide_count: int = 10):
             _fill_missing_video_evidence(cleaned_scenes, evidence)
             script["slide_count"] = len(cleaned_scenes)
             script.setdefault("duration_seconds", target_duration)
+        deck_plan = script.get("deck_plan")
+        if isinstance(deck_plan, list):
+            cleaned_plan = [item for item in deck_plan if isinstance(item, dict)][:slide_count]
+            for index, item in enumerate(cleaned_plan, start=1):
+                item["slide_number"] = index
+                role = str(item.get("role") or "").strip()
+                if role not in allowed_role_set:
+                    item["role"] = scene_roles[min(index - 1, len(scene_roles) - 1)]
+            script["deck_plan"] = cleaned_plan
         if paper_title:
             script["paper_title"] = paper_title
             script["title"] = paper_title

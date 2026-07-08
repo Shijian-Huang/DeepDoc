@@ -427,7 +427,8 @@ function handleResultPanelClick(event) {
   if (!analysisId) return;
 
   if (reanalyzeButton) {
-    reanalyzeExistingAnalysis(analysisId, reanalyzeButton);
+    const reanalyzeMode = resultPanel.querySelector('[data-field="reanalyzeMode"]')?.value || "standard";
+    reanalyzeExistingAnalysis(analysisId, reanalyzeButton, reanalyzeMode);
     return;
   }
 
@@ -466,14 +467,19 @@ function toggleList(button) {
   button.textContent = expanded ? "View less" : `View all ${button.dataset.hiddenCount || ""}`.trim();
 }
 
-async function reanalyzeExistingAnalysis(analysisId, button) {
+async function reanalyzeExistingAnalysis(analysisId, button, summaryMode = "standard") {
+  const modeControl = resultPanel.querySelector('[data-field="reanalyzeMode"]');
   button.disabled = true;
+  if (modeControl) modeControl.disabled = true;
   button.textContent = "Reanalyzing";
-  setBusy(true, "Creating a new analysis version...");
+  setBusy(true, `Creating a new ${formatMode(summaryMode).toLowerCase()} version...`);
 
   try {
-    const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}/reanalyze`, {
+    const params = new URLSearchParams({summary_mode: summaryMode || "standard"});
+    const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}/reanalyze?${params.toString()}`, {
       method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({summary_mode: summaryMode || "standard"}),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -485,6 +491,7 @@ async function reanalyzeExistingAnalysis(analysisId, button) {
     renderError(error.message || "Reanalysis failed.");
   } finally {
     button.disabled = false;
+    if (modeControl) modeControl.disabled = false;
     button.textContent = "Reanalyze as New";
     setBusy(false);
   }
@@ -533,13 +540,15 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
   titleElement.textContent = paperTitle;
   titleElement.title = paperTitle;
   node.querySelector('[data-field="meta"]').textContent = formatMeta(result);
-  node.querySelector('[data-field="summary"]').textContent = summaryText;
+  renderSummaryText(node.querySelector('[data-field="summary"]'), summaryText);
   node.querySelector('[data-field="overviewMeta"]').textContent = formatOverviewMeta(result, summaryText);
   renderPaperInfo(node.querySelector('[data-field="paperInfo"]'), result, fallbackFilename);
 
   const download = node.querySelector('[data-field="download"]');
   const downloadMarkdown = node.querySelector('[data-field="downloadMarkdown"]');
   const reanalyzeButton = node.querySelector('[data-field="reanalyze"]');
+  const reanalyzeMode = node.querySelector('[data-field="reanalyzeMode"]');
+  if (reanalyzeMode) reanalyzeMode.value = normalizeSummaryMode(result.summary_mode);
   if (analysisId) {
     download.href = `/analyses/${analysisId}/download`;
     downloadMarkdown.href = `/analyses/${analysisId}/markdown/download`;
@@ -549,6 +558,7 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
     download.removeAttribute("href");
     downloadMarkdown.removeAttribute("href");
     if (reanalyzeButton) reanalyzeButton.disabled = true;
+    if (reanalyzeMode) reanalyzeMode.disabled = true;
   }
   renderPdfViewer(node, analysisId);
 
@@ -968,6 +978,21 @@ function scriptSlideCount(script) {
   return Number(script.slide_count || script.scenes.length || 0);
 }
 
+function renderSummaryText(container, text) {
+  if (!container) return;
+  container.innerHTML = "";
+  const paragraphs = String(text || "No summary returned.")
+    .split(/\n\s*\n+/)
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  (paragraphs.length ? paragraphs : ["No summary returned."]).forEach((paragraph) => {
+    const item = document.createElement("p");
+    item.textContent = paragraph;
+    container.appendChild(item);
+  });
+}
+
 function selectedSlides(control) {
   return Number(control?.value || 10);
 }
@@ -1342,6 +1367,10 @@ function formatMode(mode) {
     one_page: "Detailed summary",
   };
   return labels[mode] || "Standard summary";
+}
+
+function normalizeSummaryMode(mode) {
+  return ["paragraph", "standard", "one_page"].includes(mode) ? mode : "standard";
 }
 
 function formatOverviewMeta(result, text) {

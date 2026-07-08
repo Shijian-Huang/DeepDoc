@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeepDoc</title>
-    <link rel="stylesheet" href="/static/styles.css?v=reference-quality-20260707" />
+    <link rel="stylesheet" href="/static/styles.css?v=mode-purpose-20260707" />
   </head>
   <body>
     <main class="app-shell">
@@ -41,15 +41,15 @@
                 <legend>Summary</legend>
                 <label>
                   <input type="radio" name="summaryMode" value="paragraph" />
-                  <span>Quick</span>
+                  <span><strong>Quick</strong><small>Should I read this?</small></span>
                 </label>
                 <label>
                   <input type="radio" name="summaryMode" value="standard" checked />
-                  <span>Standard</span>
+                  <span><strong>Standard</strong><small>Understand this paper</small></span>
                 </label>
                 <label>
                   <input type="radio" name="summaryMode" value="one_page" />
-                  <span>Detailed</span>
+                  <span><strong>Detailed</strong><small>Study for discussion</small></span>
                 </label>
               </fieldset>
 
@@ -116,9 +116,9 @@
                 <label class="compact-select">
                   <span>Summary</span>
                   <select id="arxivSummaryMode">
-                    <option value="paragraph">Quick</option>
-                    <option value="standard" selected>Standard</option>
-                    <option value="one_page">Detailed</option>
+                    <option value="paragraph">Quick · Should I read this?</option>
+                    <option value="standard" selected>Standard · Understand this paper</option>
+                    <option value="one_page">Detailed · Study for discussion</option>
                   </select>
                 </label>
               </div>
@@ -170,9 +170,9 @@
             <span>Filter</span>
             <select id="historyModeFilter">
               <option value="all">All modes</option>
-              <option value="paragraph">Quick</option>
-              <option value="standard">Standard</option>
-              <option value="one_page">Detailed</option>
+              <option value="paragraph">Quick · Should I read this?</option>
+              <option value="standard">Standard · Understand this paper</option>
+              <option value="one_page">Detailed · Study for discussion</option>
             </select>
           </label>
           <label class="history-date">
@@ -207,6 +207,14 @@
               <a data-field="downloadPdf" href="#" download hidden>Original PDF</a>
             </div>
           </details>
+          <label class="reanalyze-mode-control">
+            <span>Mode</span>
+            <select data-field="reanalyzeMode" aria-label="Reanalysis summary mode">
+              <option value="paragraph">Quick · Should I read this?</option>
+              <option value="standard">Standard · Understand this paper</option>
+              <option value="one_page">Detailed · Study for discussion</option>
+            </select>
+          </label>
           <button class="ghost-button compact-action" type="button" data-field="reanalyze">Reanalyze as New</button>
         </div>
       </div>
@@ -229,9 +237,7 @@
                 </div>
                 <button class="copy-button" type="button" data-copy-field="summary">Copy</button>
               </div>
-              <div class="overview-copy" data-field="overviewCopy">
-                <p data-field="summary"></p>
-              </div>
+              <div class="overview-copy" data-field="summary"></div>
               <button class="show-more-button" type="button" data-field="toggleOverview">Read more</button>
             </article>
             <div class="summary-grid">
@@ -325,6 +331,6 @@
       </div>
     </template>
 
-    <script src="/static/app.js?v=reference-quality-20260707"></script>
+    <script src="/static/app.js?v=mode-purpose-20260707"></script>
   </body>
 </html>

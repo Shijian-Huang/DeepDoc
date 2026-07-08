@@ -13,7 +13,12 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from llm.summarizer import generate_video_script, gemini_configuration_error, is_gemini_configured
+from llm.summarizer import (
+    generate_video_script,
+    gemini_configuration_error,
+    is_gemini_configured,
+    normalize_summary_mode,
+)
 from parser.pdf_parser import parse_pdf_pages
 from parser.reference_extractor import extract_references
 from pipeline import run_pipeline
@@ -41,6 +46,8 @@ from video_generator import (
     generate_video_from_script,
 )
 
+APP_VERSION = "mode-purpose-20260707"
+
 app = FastAPI(
     title="DeepDoc",
     description="AI-powered research paper analysis service.",
@@ -66,6 +73,10 @@ class ArxivAnalyzeRequest(BaseModel):
     categories: list[str] | None = None
 
 
+class ReanalyzeRequest(BaseModel):
+    summary_mode: str = "same"
+
+
 def analyze_pdf_file(
     file_path: str | Path,
     filename: str,
@@ -78,13 +89,15 @@ def analyze_pdf_file(
     submitted_at = datetime.now(timezone.utc)
 
     try:
-        result = run_pipeline(str(file_path), summary_mode=summary_mode)
+        normalized_summary_mode = normalize_summary_mode(summary_mode)
+        result = run_pipeline(str(file_path), summary_mode=normalized_summary_mode)
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {error}") from error
 
     generated_at = datetime.now(timezone.utc)
     result["submitted_at"] = submitted_at.isoformat()
     result["generated_at"] = generated_at.isoformat()
+    result["summary_mode"] = normalized_summary_mode
     result["processing_seconds"] = round(time.perf_counter() - started_at, 2)
     if source_metadata:
         result["source_metadata"] = source_metadata
@@ -752,6 +765,7 @@ async def health_check():
     mp4_ready = ffmpeg_ready and bool(tts_health.get("ready"))
     return {
         "status": "ok" if gemini_ready and mp4_ready else "degraded",
+        "app_version": APP_VERSION,
         "gemini_configured": gemini_ready,
         "ffmpeg_available": ffmpeg_ready,
         "tts": tts_health,
@@ -861,7 +875,11 @@ async def get_analyses():
 
 
 @app.post("/analyses/{analysis_id}/reanalyze")
-async def reanalyze_existing_pdf(analysis_id: str):
+async def reanalyze_existing_pdf(
+    analysis_id: str,
+    summary_mode: str = Query("same", max_length=24),
+    request: ReanalyzeRequest | None = None,
+):
     record = get_analysis(analysis_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
@@ -871,11 +889,17 @@ async def reanalyze_existing_pdf(analysis_id: str):
         raise HTTPException(status_code=404, detail="Original PDF not found. Upload or analyze the paper again.")
 
     result = record.get("result", {})
-    summary_mode = result.get("summary_mode") or "standard"
+    previous_summary_mode = result.get("summary_mode") or "standard"
+    requested_summary_mode = request.summary_mode if request else summary_mode
+    selected_summary_mode = (
+        previous_summary_mode
+        if requested_summary_mode in {"", "same"}
+        else normalize_summary_mode(requested_summary_mode)
+    )
     return analyze_pdf_file(
         pdf_path,
         Path(record.get("filename") or pdf_path.name).name,
-        summary_mode=summary_mode,
+        summary_mode=selected_summary_mode,
         source_metadata=result.get("source_metadata") if isinstance(result.get("source_metadata"), dict) else None,
     )
 
