@@ -41,13 +41,12 @@ from storage import (
 from video_generator import (
     PIPER_BIN,
     PIPER_MODEL,
-    PIPER_MODEL_URL,
     TTS_PROVIDER,
     VideoGenerationError,
     generate_video_from_script,
 )
 
-APP_VERSION = "piper-runtime-download-20260708"
+APP_VERSION = "mode-purpose-20260707"
 
 app = FastAPI(
     title="DeepDoc",
@@ -131,14 +130,11 @@ def _tts_health() -> dict:
         venv_piper = Path(sys.executable).parent / "piper"
         piper_binary_ready = shutil.which(PIPER_BIN) is not None or venv_piper.exists()
         model_ready = Path(PIPER_MODEL).expanduser().exists()
-        model_download_configured = bool(PIPER_MODEL_URL)
         return {
             "provider": provider,
-            "ready": piper_binary_ready and (model_ready or model_download_configured),
+            "ready": piper_binary_ready and model_ready,
             "piper_binary_available": piper_binary_ready,
             "piper_model_available": model_ready,
-            "piper_model_download_configured": model_download_configured,
-            "piper_model": PIPER_MODEL,
         }
     if provider == "say":
         say_ready = shutil.which("say") is not None

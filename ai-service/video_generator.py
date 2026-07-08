@@ -16,11 +16,6 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 VIDEO_DIR = Path(__file__).resolve().parent / "data" / "videos"
 WORK_DIR = VIDEO_DIR / "work"
 DEFAULT_PIPER_MODEL = Path(__file__).resolve().parent / "data" / "voices" / "en_US-lessac-medium.onnx"
-DEFAULT_PIPER_MODEL_URL = (
-    "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
-    "en/en_US/lessac/medium/en_US-lessac-medium.onnx"
-)
-DEFAULT_PIPER_MODEL_CONFIG_URL = f"{DEFAULT_PIPER_MODEL_URL}.json"
 DEFAULT_TTS_VOICE = os.getenv("DEEPDOC_TTS_VOICE", "Samantha")
 DEFAULT_TTS_RATE = os.getenv("DEEPDOC_TTS_RATE", "150")
 SCENE_PAUSE_SECONDS = float(os.getenv("DEEPDOC_SCENE_PAUSE_SECONDS", "1.05"))
@@ -36,8 +31,6 @@ OPENAI_TTS_INSTRUCTIONS = os.getenv(
 )
 PIPER_BIN = os.getenv("DEEPDOC_PIPER_BIN", "piper")
 PIPER_MODEL = os.getenv("DEEPDOC_PIPER_MODEL", str(DEFAULT_PIPER_MODEL))
-PIPER_MODEL_URL = os.getenv("DEEPDOC_PIPER_MODEL_URL", DEFAULT_PIPER_MODEL_URL).strip()
-PIPER_MODEL_CONFIG_URL = os.getenv("DEEPDOC_PIPER_MODEL_CONFIG_URL", DEFAULT_PIPER_MODEL_CONFIG_URL).strip()
 PIPER_LENGTH_SCALE = os.getenv("DEEPDOC_PIPER_LENGTH_SCALE", "1.08")
 PIPER_NOISE_SCALE = os.getenv("DEEPDOC_PIPER_NOISE_SCALE", "")
 PIPER_NOISE_W = os.getenv("DEEPDOC_PIPER_NOISE_W", "")
@@ -200,7 +193,7 @@ def _generate_piper_tts(audio_path: Path, text: str) -> None:
 
     model_path = Path(PIPER_MODEL).expanduser()
     if not model_path.exists():
-        _download_piper_model(model_path)
+        raise VideoGenerationError(f"Piper model was not found: {model_path}")
 
     command = [
         piper_path,
@@ -223,42 +216,6 @@ def _generate_piper_tts(audio_path: Path, text: str) -> None:
     if result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip() or "Piper TTS failed."
         raise VideoGenerationError(message)
-
-
-def _download_file(url: str, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = destination.with_suffix(f"{destination.suffix}.tmp")
-    try:
-        with urllib.request.urlopen(url, timeout=180) as response:
-            with temp_path.open("wb") as output:
-                shutil.copyfileobj(response, output)
-        temp_path.replace(destination)
-    except (OSError, urllib.error.URLError) as error:
-        try:
-            temp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise VideoGenerationError(
-            f"Could not download Piper voice asset from {url}: {error}"
-        ) from error
-
-
-def _download_piper_model(model_path: Path) -> None:
-    if not PIPER_MODEL_URL:
-        raise VideoGenerationError(
-            f"Piper model was not found: {model_path}. "
-            "Set DEEPDOC_PIPER_MODEL_URL to download it at runtime, "
-            "or set DEEPDOC_TTS_PROVIDER=openai."
-        )
-
-    _download_file(PIPER_MODEL_URL, model_path)
-
-    config_path = Path(f"{model_path}.json")
-    if PIPER_MODEL_CONFIG_URL and not config_path.exists():
-        _download_file(PIPER_MODEL_CONFIG_URL, config_path)
-
-    if not model_path.exists():
-        raise VideoGenerationError(f"Piper model was not found after download: {model_path}")
 
 
 def _generate_openai_tts(audio_path: Path, text: str) -> None:
