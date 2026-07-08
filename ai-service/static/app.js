@@ -562,6 +562,7 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
     sourceType: "source",
   });
   renderReferences(node.querySelector('[data-field="references"]'), result.references || []);
+  renderReferenceStatus(node.querySelector('[data-field="referenceStatus"]'), result);
   const videoContainer = node.querySelector('[data-field="videoScript"]');
   const videoStatus = node.querySelector('[data-field="videoStatus"]');
   const videoButton = node.querySelector('[data-field="generateVideoScript"]');
@@ -1157,6 +1158,35 @@ function renderReferences(container, references) {
     `;
     container.appendChild(li);
   });
+}
+
+function renderReferenceStatus(container, result) {
+  if (!container) return;
+  const references = Array.isArray(result.references) ? result.references : [];
+  const parts = [];
+  const hasExpectedMismatch = result.references_expected_count && result.references_expected_count !== references.length;
+  if (references.length) parts.push(`${references.length} extracted`);
+  if (hasExpectedMismatch) {
+    parts.push(`expected around ${result.references_expected_count}`);
+  }
+  if (result.references_repaired_from_pdf) {
+    parts.push("repaired from PDF text");
+  }
+  if (result.references_low_confidence) {
+    parts.push("may be incomplete");
+  }
+  if (result.references_extraction_method && result.references_extraction_method !== "local") {
+    parts.push(result.references_extraction_method.replaceAll("_", " "));
+  }
+
+  container.textContent = parts.join(" · ");
+  const shouldShow = Boolean(
+    result.references_repaired_from_pdf
+    || result.references_low_confidence
+    || hasExpectedMismatch
+    || (result.references_extraction_method && result.references_extraction_method !== "local")
+  );
+  container.hidden = !shouldShow || parts.length === 0;
 }
 
 function toggleReference(button) {

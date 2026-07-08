@@ -1,6 +1,6 @@
 from llm.summarizer import normalize_summary_mode, summarize_research_paper
 from parser.pdf_parser import extract_pdf_title, parse_pdf_pages
-from parser.reference_extractor import extract_references
+from parser.reference_extractor import extract_references_with_diagnostics
 from utils.section_extractor import build_summary_input_from_pages
 
 def run_pipeline(file_path: str, summary_mode: str = "standard"):
@@ -45,7 +45,7 @@ def run_pipeline(file_path: str, summary_mode: str = "standard"):
                 "evidence": []
             },
             "chunk_summaries": [],
-            "references": extract_references(raw_text),
+            **_reference_result_fields(raw_text),
             "summary_input_sections": selected_sections,
             "evidence_sources": evidence_sources,
             "page_count": len(pages)
@@ -56,15 +56,30 @@ def run_pipeline(file_path: str, summary_mode: str = "standard"):
         summary_mode=normalized_mode,
     )
     final_summary.setdefault("title", paper_title)
-    references = extract_references(raw_text)
+    reference_fields = _reference_result_fields(raw_text)
 
     return {
         "paper_title": paper_title,
         "summary_mode": normalized_mode,
         "document_summary": final_summary,
         # "chunk_summaries": [],
-        "references": references,
+        **reference_fields,
         "summary_input_sections": selected_sections,
         "evidence_sources": evidence_sources,
         "page_count": len(pages)
     }
+
+
+def _reference_result_fields(raw_text: str) -> dict:
+    result = extract_references_with_diagnostics(raw_text)
+    fields = {
+        "references": result.references,
+        "references_extraction_method": result.method,
+        "references_low_confidence": result.low_confidence,
+        "references_expected_count": result.expected_count,
+        "references_section_char_count": result.section_char_count,
+        "references_extraction_notes": result.notes,
+    }
+    if result.repaired:
+        fields["references_repaired_from_pdf"] = True
+    return fields

@@ -1824,6 +1824,14 @@ li {
   transition: background 150ms ease;
 }
 
+.reference-status {
+  margin: -2px 0 12px;
+  color: rgba(110, 110, 115, 0.82);
+  font-size: 0.8rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
 .reference-entry:hover {
   background: rgba(241, 246, 255, 0.76);
 }

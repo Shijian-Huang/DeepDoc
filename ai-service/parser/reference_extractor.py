@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass, field
 from typing import Optional
 
 from llm.summarizer import extract_references_llm
@@ -10,6 +11,7 @@ REFERENCE_SECTION_RE = re.compile(
 
 BRACKET_REFERENCE_RE = re.compile(r"(?m)^\s*\[(\d+)\][ \t]+")
 NUMBERED_REFERENCE_RE = re.compile(r"(?m)^\s*(\d{1,3})[.)][ \t]*(?=[A-Z])")
+BRACKET_REFERENCE_ANYWHERE_RE = re.compile(r"(?<!\w)\[(\d{1,3})\][ \t]+")
 
 REFERENCE_START_RE = re.compile(
     r"^\s*(?:\[\d+\]|\d{1,3}\.|\d{1,3}\)|[A-Z][A-Za-z'-]+,\s+[A-Z])"
@@ -20,7 +22,7 @@ TRAILING_SECTION_RE = re.compile(
 )
 
 APPENDIX_HEADING_RE = re.compile(r"^(appendix|appendices)\b", re.IGNORECASE)
-APPENDIX_LETTER_HEADING_RE = re.compile(r"^[A-Z]\.\s+[A-Z].{4,}$")
+APPENDIX_LETTER_HEADING_RE = re.compile(r"^[A-Z]\.\s+[^,]{4,80}$")
 APPENDIX_TITLE_RE = re.compile(r"^[A-Z].{4,}$")
 YEAR_RE = re.compile(r"\b(19|20)\d{2}[a-z]?\b")
 PAGE_NUMBER_RE = re.compile(r"^\d{1,3}$")
@@ -45,7 +47,26 @@ ACKNOWLEDGMENT_REFERENCES_RE = re.compile(
 SUPERSCRIPT_NUMBERED_REFERENCE_RE = re.compile(r"(?m)^\s*(\d{1,3})(?=[A-Z])")
 
 
+@dataclass
+class ReferenceExtractionResult:
+    references: list[str]
+    method: str = "none"
+    repaired: bool = False
+    low_confidence: bool = False
+    expected_count: int = 0
+    section_char_count: int = 0
+    notes: list[str] = field(default_factory=list)
+
+
 def extract_reference_section(text: str) -> str:
+    return _extract_reference_section(text, relaxed=False)
+
+
+def extract_reference_section_relaxed(text: str) -> str:
+    return _extract_reference_section(text, relaxed=True)
+
+
+def _extract_reference_section(text: str, relaxed: bool = False) -> str:
     match = REFERENCE_SECTION_RE.search(text)
     if match:
         ref_text = match.group("body")
@@ -90,13 +111,14 @@ def extract_reference_section(text: str) -> str:
                 next_line = candidate.strip()
                 break
         if (
-            lines
+            not relaxed
+            and lines
             and APPENDIX_LETTER_HEADING_RE.match(line)
             and not REFERENCE_CONTINUATION_RE.match(next_line)
             and not YEAR_RE.search(next_line[:80])
         ):
             break
-        if lines and APPENDIX_MARKER_RE.match(line) and APPENDIX_TITLE_RE.match(next_line):
+        if not relaxed and lines and APPENDIX_MARKER_RE.match(line) and APPENDIX_TITLE_RE.match(next_line):
             break
         lines.append(raw_line)
 
@@ -150,6 +172,22 @@ def _extract_bracketed_references(ref_text: str, limit: Optional[int] = None) ->
         end = matches[index + 1].start() if index + 1 < len(matches) else len(ref_text)
         entry = _clean_reference_entry(ref_text[match.start():end])
         if len(entry) > 40 and re.search(r"(19|20)\d{2}", entry):
+            entries.append(entry)
+
+    return _repair_reference_boundaries(entries)
+
+
+def _extract_inline_bracketed_references(ref_text: str, limit: Optional[int] = None) -> list[str]:
+    matches = list(BRACKET_REFERENCE_ANYWHERE_RE.finditer(ref_text))
+    if not matches:
+        return []
+
+    entries: list[str] = []
+    selected_matches = matches[:limit] if limit is not None else matches
+    for index, match in enumerate(selected_matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(ref_text)
+        entry = _clean_reference_entry(ref_text[match.start():end])
+        if len(entry) > 40 and YEAR_RE.search(entry):
             entries.append(entry)
 
     return _repair_reference_boundaries(entries)
@@ -216,6 +254,10 @@ def extract_references_local(ref_text: str, limit: Optional[int] = None) -> list
     if len(bracketed_references) >= 5:
         return bracketed_references
 
+    inline_bracketed_references = _extract_inline_bracketed_references(ref_text, limit)
+    if len(inline_bracketed_references) >= 5:
+        return inline_bracketed_references
+
     numbered_references = _extract_numbered_references(ref_text, limit)
     if len(numbered_references) >= 5:
         return numbered_references
@@ -226,6 +268,9 @@ def extract_references_local(ref_text: str, limit: Optional[int] = None) -> list
 
     if bracketed_references:
         return bracketed_references
+
+    if inline_bracketed_references:
+        return inline_bracketed_references
 
     if numbered_references:
         return numbered_references
@@ -257,13 +302,99 @@ def extract_references_local(ref_text: str, limit: Optional[int] = None) -> list
         if len(entry) > 40 and re.search(r"(19|20)\d{2}", entry)
     ])
 
-def extract_references(text: str):
+
+def _expected_marker_count(ref_text: str) -> int:
+    bracket_numbers = [
+        int(match.group(1))
+        for match in BRACKET_REFERENCE_ANYWHERE_RE.finditer(ref_text)
+        if int(match.group(1)) <= 200
+    ]
+    if bracket_numbers:
+        return max(bracket_numbers)
+
+    numbered_text = SUPERSCRIPT_NUMBERED_REFERENCE_RE.sub(r"\1. ", ref_text)
+    numbered_matches = [
+        int(match.group(1))
+        for match in NUMBERED_REFERENCE_RE.finditer(numbered_text)
+        if int(match.group(1)) <= 200
+    ]
+    return max(numbered_matches) if numbered_matches else 0
+
+
+def _reference_quality_notes(ref_text: str, references: list[str]) -> list[str]:
+    notes: list[str] = []
+    expected_count = _expected_marker_count(ref_text)
+    if not references:
+        notes.append("no_references")
+        return notes
+    if len(ref_text) > 1000 and len(references) < 5:
+        notes.append("few_references_for_long_section")
+    if expected_count >= 5 and len(references) < max(3, expected_count // 2):
+        notes.append("parsed_count_far_below_numbered_markers")
+    if any(len(reference) > 2200 for reference in references):
+        notes.append("oversized_reference_entry")
+    if any(BRACKET_REFERENCE_ANYWHERE_RE.search(reference[12:]) for reference in references):
+        notes.append("merged_bracketed_references")
+    return notes
+
+
+def extract_references_with_diagnostics(text: str, allow_llm: bool = True) -> ReferenceExtractionResult:
     ref_text = extract_reference_section(text)
     if not ref_text:
-        return []
+        return ReferenceExtractionResult(references=[], notes=["missing_reference_section"])
 
     local_references = extract_references_local(ref_text)
-    if local_references:
-        return local_references
+    expected_count = _expected_marker_count(ref_text)
+    notes = _reference_quality_notes(ref_text, local_references)
+    if local_references and not notes:
+        return ReferenceExtractionResult(
+            references=local_references,
+            method="local",
+            expected_count=expected_count,
+            section_char_count=len(ref_text),
+        )
 
-    return extract_references_llm(ref_text[:6000])
+    relaxed_ref_text = extract_reference_section_relaxed(text)
+    if relaxed_ref_text and relaxed_ref_text != ref_text:
+        relaxed_references = extract_references_local(relaxed_ref_text)
+        relaxed_notes = _reference_quality_notes(relaxed_ref_text, relaxed_references)
+        if relaxed_references and (
+            not relaxed_notes
+            or len(relaxed_references) > len(local_references)
+        ):
+            return ReferenceExtractionResult(
+                references=relaxed_references,
+                method="local_relaxed",
+                repaired=True,
+                low_confidence=bool(relaxed_notes),
+                expected_count=_expected_marker_count(relaxed_ref_text),
+                section_char_count=len(relaxed_ref_text),
+                notes=relaxed_notes,
+            )
+
+    if allow_llm:
+        llm_references = extract_references_llm((relaxed_ref_text or ref_text)[:12000])
+        llm_notes = _reference_quality_notes(relaxed_ref_text or ref_text, llm_references)
+        if llm_references and len(llm_references) > len(local_references):
+            return ReferenceExtractionResult(
+                references=llm_references,
+                method="llm_repair",
+                repaired=True,
+                low_confidence=bool(llm_notes),
+                expected_count=_expected_marker_count(relaxed_ref_text or ref_text),
+                section_char_count=len(relaxed_ref_text or ref_text),
+                notes=llm_notes,
+            )
+
+    return ReferenceExtractionResult(
+        references=local_references,
+        method="local_low_confidence" if local_references else "none",
+        low_confidence=True,
+        expected_count=expected_count,
+        section_char_count=len(ref_text),
+        notes=notes or ["unrepaired_low_confidence"],
+    )
+
+
+def extract_references(text: str):
+    return extract_references_with_diagnostics(text, allow_llm=False).references
