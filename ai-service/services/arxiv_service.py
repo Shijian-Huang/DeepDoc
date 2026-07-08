@@ -1,5 +1,6 @@
 import re
 import tempfile
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
@@ -13,6 +14,8 @@ ARXIV_ID_RE = re.compile(r"^[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?$|^[a-z-]+(\.[A-Z]{2})
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 OPENSEARCH_NS = {"opensearch": "http://a9.com/-/spec/opensearch/1.1/"}
 DOWNLOAD_TIMEOUT_SECONDS = 30
+SEARCH_RETRY_DELAY_SECONDS = 0.75
+SEARCH_RETRY_HTTP_CODES = {400, 408, 429, 500, 502, 503, 504}
 SEARCH_FIELD_PREFIXES = {
     "all": "all",
     "title": "ti",
@@ -25,7 +28,9 @@ CATEGORY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 class ArxivServiceError(Exception):
-    pass
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _text(element: ElementTree.Element | None) -> str:
@@ -116,6 +121,33 @@ def _normalize_category(category: str | None) -> str:
     return value
 
 
+def _read_search_response(request: Request) -> bytes:
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            with urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+                return response.read()
+        except HTTPError as error:
+            last_error = error
+            if error.code not in SEARCH_RETRY_HTTP_CODES or attempt == 1:
+                break
+        except (URLError, TimeoutError) as error:
+            last_error = error
+            if attempt == 1:
+                break
+
+        time.sleep(SEARCH_RETRY_DELAY_SECONDS)
+
+    if isinstance(last_error, HTTPError):
+        if last_error.code == 429:
+            message = "arXiv is rate limiting search right now. Try again in a moment."
+        else:
+            message = "arXiv search is temporarily unavailable. Try again or use a more specific query."
+        raise ArxivServiceError(message, status_code=502) from last_error
+
+    raise ArxivServiceError("Could not reach arXiv right now.", status_code=502) from last_error
+
+
 def _build_search_query(query: str, search_field: str, category: str) -> str:
     prefix = SEARCH_FIELD_PREFIXES.get(search_field, "all")
     search_query = f"{prefix}:{query}"
@@ -155,16 +187,12 @@ def search_arxiv_page(
         headers={"User-Agent": "DeepDoc/0.1 (research paper analysis tool)"},
     )
 
-    try:
-        with urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
-            payload = response.read()
-    except (HTTPError, URLError, TimeoutError) as error:
-        raise ArxivServiceError("Could not search arXiv right now.") from error
+    payload = _read_search_response(request)
 
     try:
         root = ElementTree.fromstring(payload)
     except ElementTree.ParseError as error:
-        raise ArxivServiceError("arXiv returned an unreadable search response.") from error
+        raise ArxivServiceError("arXiv returned an unreadable search response.", status_code=502) from error
 
     total_results = _int_text(root.find("opensearch:totalResults", OPENSEARCH_NS))
     start_index = _int_text(root.find("opensearch:startIndex", OPENSEARCH_NS), bounded_start)
@@ -249,10 +277,10 @@ def download_arxiv_pdf(pdf_url: str, arxiv_id: str, target_dir: str | Path | Non
         with urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
             content = response.read()
     except (HTTPError, URLError, TimeoutError) as error:
-        raise ArxivServiceError("Could not download the arXiv PDF.") from error
+        raise ArxivServiceError("Could not download the arXiv PDF.", status_code=502) from error
 
     if not content.startswith(b"%PDF"):
-        raise ArxivServiceError("arXiv did not return a valid PDF file.")
+        raise ArxivServiceError("arXiv did not return a valid PDF file.", status_code=502)
 
     output_path.write_bytes(content)
     return output_path

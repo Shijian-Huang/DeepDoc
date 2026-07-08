@@ -806,7 +806,7 @@ async def arxiv_search(
             sort_order=sort_order,
         )
     except ArxivServiceError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
 
 
 @app.post("/arxiv/analyze")
@@ -828,7 +828,7 @@ async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
             target_dir=UPLOAD_DIR,
         )
     except ArxivServiceError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
 
     try:
         return analyze_pdf_file(
