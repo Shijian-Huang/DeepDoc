@@ -72,6 +72,7 @@ let authState = {
   ready: false,
   session: null,
 };
+let activeLocalPdfUrl = "";
 let arxivSearchState = {
   query: "",
   searchField: "all",
@@ -120,6 +121,7 @@ uploadForm.addEventListener("submit", async (event) => {
 
     const result = await response.json();
     if (usesAnonymousHistory()) {
+      setActiveLocalPdf(file);
       saveAnonymousAnalysis(result, file.name);
     }
     renderResult(result, file.name);
@@ -262,6 +264,13 @@ function getAnonymousRecord(localId) {
 
 function deleteAnonymousRecord(localId) {
   writeAnonymousRecords(readAnonymousRecords().filter((record) => record.local_id !== localId));
+}
+
+function setActiveLocalPdf(file) {
+  if (activeLocalPdfUrl) {
+    URL.revokeObjectURL(activeLocalPdfUrl);
+  }
+  activeLocalPdfUrl = file ? URL.createObjectURL(file) : "";
 }
 
 function authHeaders(headers = {}) {
@@ -689,6 +698,7 @@ async function handleArxivResultClick(event) {
       throw new Error(payload.detail || `arXiv analysis failed with status ${response.status}`);
     }
     if (usesAnonymousHistory()) {
+      setActiveLocalPdf(null);
       saveAnonymousAnalysis(payload, `arxiv-${item.arxiv_id}.pdf`);
     }
     renderResult(payload, `arxiv-${item.arxiv_id}.pdf`);
@@ -823,6 +833,7 @@ function setBusy(isBusy, message = "") {
 }
 
 function renderError(message) {
+  setActiveLocalPdf(null);
   document.body.classList.remove("has-result");
   document.body.classList.remove("source-collapsed");
   document.body.classList.remove("is-busy");
@@ -918,13 +929,24 @@ function renderPdfViewer(root, analysisId) {
   if (!panel || !viewer || !placeholder) return;
 
   if (!analysisId) {
-    panel.dataset.pdfBaseUrl = "";
-    viewer.hidden = true;
-    viewer.removeAttribute("src");
-    placeholder.hidden = false;
+    panel.dataset.pdfBaseUrl = activeLocalPdfUrl;
+    viewer.hidden = !activeLocalPdfUrl;
+    if (activeLocalPdfUrl) {
+      viewer.src = pdfViewerUrl(activeLocalPdfUrl, 1);
+      placeholder.hidden = true;
+    } else {
+      viewer.removeAttribute("src");
+      placeholder.hidden = false;
+      placeholder.textContent = "Original PDF is available only during the upload session.";
+    }
     if (downloadPdf) {
-      downloadPdf.hidden = true;
-      downloadPdf.removeAttribute("href");
+      downloadPdf.hidden = !activeLocalPdfUrl;
+      if (activeLocalPdfUrl) {
+        downloadPdf.href = activeLocalPdfUrl;
+        downloadPdf.download = "";
+      } else {
+        downloadPdf.removeAttribute("href");
+      }
     }
     return;
   }
@@ -1646,6 +1668,7 @@ async function openAnalysisItem(item) {
       renderError("This browser-only analysis was not found.");
       return;
     }
+    setActiveLocalPdf(null);
     renderResult(record.result || {}, record.filename || "Browser Analysis");
     return;
   }
