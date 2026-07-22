@@ -120,8 +120,8 @@ uploadForm.addEventListener("submit", async (event) => {
     }
 
     const result = await response.json();
+    setActiveLocalPdf(file);
     if (usesAnonymousHistory()) {
-      setActiveLocalPdf(file);
       saveAnonymousAnalysis(result, file.name);
     }
     renderResult(result, file.name);
@@ -881,7 +881,10 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
     if (reanalyzeButton) reanalyzeButton.disabled = true;
     if (reanalyzeMode) reanalyzeMode.disabled = true;
   }
-  renderPdfViewer(node, analysisId);
+  renderPdfViewer(node, analysisId, {
+    preferLocalPdf: Boolean(activeLocalPdfUrl),
+    fallbackPdfUrl: source.pdf_url || "",
+  });
 
   renderList(node.querySelector('[data-field="keyIdeas"]'), summary.key_ideas || [], {variant: "ideas", limit: 5});
   renderList(node.querySelector('[data-field="contributions"]'), summary.contributions || [], {variant: "contributions", limit: 5});
@@ -921,32 +924,48 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
   bindTabs(resultPanel);
 }
 
-function renderPdfViewer(root, analysisId) {
+function renderPdfViewer(root, analysisId, options = {}) {
   const panel = root.querySelector('[data-field="pdfPanel"]');
   const viewer = root.querySelector('[data-field="pdfViewer"]');
   const placeholder = root.querySelector('[data-field="pdfPlaceholder"]');
   const downloadPdf = root.querySelector('[data-field="downloadPdf"]');
   if (!panel || !viewer || !placeholder) return;
 
-  if (!analysisId) {
+  if (options.preferLocalPdf && activeLocalPdfUrl) {
     panel.dataset.pdfBaseUrl = activeLocalPdfUrl;
-    viewer.hidden = !activeLocalPdfUrl;
-    if (activeLocalPdfUrl) {
-      viewer.src = pdfViewerUrl(activeLocalPdfUrl, 1);
-      placeholder.hidden = true;
-    } else {
-      viewer.removeAttribute("src");
-      placeholder.hidden = false;
-      placeholder.textContent = "Original PDF is available only during the upload session.";
-    }
+    viewer.hidden = false;
+    viewer.src = pdfViewerUrl(activeLocalPdfUrl, 1);
+    placeholder.hidden = true;
     if (downloadPdf) {
-      downloadPdf.hidden = !activeLocalPdfUrl;
-      if (activeLocalPdfUrl) {
-        downloadPdf.href = activeLocalPdfUrl;
-        downloadPdf.download = "";
-      } else {
-        downloadPdf.removeAttribute("href");
-      }
+      downloadPdf.hidden = false;
+      downloadPdf.href = activeLocalPdfUrl;
+      downloadPdf.download = "";
+    }
+    return;
+  }
+
+  if (options.fallbackPdfUrl) {
+    panel.dataset.pdfBaseUrl = options.fallbackPdfUrl;
+    viewer.hidden = false;
+    viewer.src = pdfViewerUrl(options.fallbackPdfUrl, 1);
+    placeholder.hidden = true;
+    if (downloadPdf) {
+      downloadPdf.hidden = false;
+      downloadPdf.href = options.fallbackPdfUrl;
+      downloadPdf.download = "";
+    }
+    return;
+  }
+
+  if (!analysisId) {
+    panel.dataset.pdfBaseUrl = "";
+    viewer.hidden = true;
+    viewer.removeAttribute("src");
+    placeholder.hidden = false;
+    placeholder.textContent = "Original PDF is available only during the upload session.";
+    if (downloadPdf) {
+      downloadPdf.hidden = true;
+      downloadPdf.removeAttribute("href");
     }
     return;
   }
