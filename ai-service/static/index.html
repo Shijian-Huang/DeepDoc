@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeepDoc</title>
-    <link rel="stylesheet" href="/static/styles.css?v=mode-purpose-20260707" />
+    <link rel="stylesheet" href="/static/styles.css?v=history-auth-layer-20260722" />
   </head>
   <body>
     <main class="app-shell">
@@ -16,8 +16,20 @@
           </div>
           <div class="topbar-actions">
             <button id="openHistoryButton" class="icon-button" type="button" aria-label="History" title="History">History</button>
-            <a class="icon-button" href="/docs" aria-label="API Docs" title="API Docs">API Docs</a>
             <a class="icon-button" href="https://github.com/Shijian-Huang/DeepDoc" target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub">GitHub</a>
+            <div id="authBox" class="auth-box" hidden>
+              <div id="authEntry" class="auth-entry">
+                <button id="showSignInButton" class="auth-pill" type="button">Sign In</button>
+                <button id="showSignUpButton" type="button" hidden>Sign up</button>
+              </div>
+              <div id="authSession" class="auth-session" hidden>
+                <button id="authAvatarButton" class="auth-avatar-button" type="button" aria-label="Account" aria-expanded="false"></button>
+                <div id="authAccountMenu" class="auth-account-menu" hidden>
+                  <span id="authUserEmail"></span>
+                  <button id="authSignOutButton" type="button">Sign Out</button>
+                </div>
+              </div>
+            </div>
           </div>
         </header>
 
@@ -150,6 +162,27 @@
       </section>
 
       <button id="historyOverlay" class="history-overlay" type="button" aria-label="Close history" hidden></button>
+      <div id="authModal" class="auth-modal" hidden>
+        <button id="authModalOverlay" class="auth-modal-overlay" type="button" aria-label="Close sign in"></button>
+        <section class="auth-modal-card" role="dialog" aria-modal="true" aria-labelledby="authFormTitle">
+          <button id="authModalCloseButton" class="auth-modal-close" type="button" aria-label="Close sign in">×</button>
+          <form id="authForm" class="auth-form" novalidate>
+            <h2 id="authFormTitle" class="auth-form-title">Sign in to DeepDoc</h2>
+            <label>
+              <span>Email</span>
+              <input id="authEmail" type="email" autocomplete="email" required />
+            </label>
+            <label>
+              <span>Password</span>
+              <input id="authPassword" type="password" autocomplete="current-password" required />
+            </label>
+            <button id="authSubmitButton" class="auth-submit-button" type="submit">Continue</button>
+            <button id="authCancelButton" class="auth-cancel-button" type="button">Cancel</button>
+            <button id="authModeToggleButton" class="auth-mode-toggle" type="button">Sign up instead</button>
+            <p id="authStatus" class="auth-status"></p>
+          </form>
+        </section>
+      </div>
       <aside id="historyPanel" class="history-panel" aria-label="Analysis history" aria-hidden="true">
         <div class="history-header">
           <div>
@@ -331,6 +364,7 @@
       </div>
     </template>
 
-    <script src="/static/app.js?v=mode-purpose-20260707"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="/static/app.js?v=history-auth-layer-20260722"></script>
   </body>
 </html>

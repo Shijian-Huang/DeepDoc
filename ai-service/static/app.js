@@ -13,6 +13,26 @@ const closeHistoryButton = document.querySelector("#closeHistoryButton");
 const historyOverlay = document.querySelector("#historyOverlay");
 const historyList = document.querySelector("#historyList");
 const refreshHistoryButton = document.querySelector("#refreshHistoryButton");
+const authBox = document.querySelector("#authBox");
+const authEntry = document.querySelector("#authEntry");
+const authModal = document.querySelector("#authModal");
+const authModalOverlay = document.querySelector("#authModalOverlay");
+const authForm = document.querySelector("#authForm");
+const authFormTitle = document.querySelector("#authFormTitle");
+const authEmailInput = document.querySelector("#authEmail");
+const authPasswordInput = document.querySelector("#authPassword");
+const showSignInButton = document.querySelector("#showSignInButton");
+const showSignUpButton = document.querySelector("#showSignUpButton");
+const authSubmitButton = document.querySelector("#authSubmitButton");
+const authCancelButton = document.querySelector("#authCancelButton");
+const authModalCloseButton = document.querySelector("#authModalCloseButton");
+const authModeToggleButton = document.querySelector("#authModeToggleButton");
+const authAvatarButton = document.querySelector("#authAvatarButton");
+const authAccountMenu = document.querySelector("#authAccountMenu");
+const authSignOutButton = document.querySelector("#authSignOutButton");
+const authSession = document.querySelector("#authSession");
+const authUserEmail = document.querySelector("#authUserEmail");
+const authStatus = document.querySelector("#authStatus");
 const historySearchInput = document.querySelector("#historySearch");
 const historyModeFilter = document.querySelector("#historyModeFilter");
 const historyDateFilter = document.querySelector("#historyDateFilter");
@@ -40,9 +60,18 @@ const arxivPlaceholders = [
   "Start with a question.",
   "Search by title, author, or topic.",
 ];
+const ANONYMOUS_HISTORY_KEY = "deepdoc.anonymousAnalyses.v1";
+const ANONYMOUS_HISTORY_LIMIT = 50;
 
 let historyItems = [];
 let arxivItems = [];
+let authState = {
+  enabled: false,
+  client: null,
+  mode: "",
+  ready: false,
+  session: null,
+};
 let arxivSearchState = {
   query: "",
   searchField: "all",
@@ -55,6 +84,8 @@ let arxivSearchState = {
   totalPages: 0,
   totalResults: 0,
 };
+
+initAuth();
 
 pdfFileInput.addEventListener("change", () => {
   const file = pdfFileInput.files[0];
@@ -78,7 +109,7 @@ uploadForm.addEventListener("submit", async (event) => {
   setBusy(true, "Analyzing paper...");
 
   try {
-    const response = await fetch("/analyze-pdf", {
+    const response = await apiFetch("/analyze-pdf", {
       method: "POST",
       body: formData,
     });
@@ -88,6 +119,9 @@ uploadForm.addEventListener("submit", async (event) => {
     }
 
     const result = await response.json();
+    if (usesAnonymousHistory()) {
+      saveAnonymousAnalysis(result, file.name);
+    }
     renderResult(result, file.name);
     await loadHistory();
   } catch (error) {
@@ -98,6 +132,15 @@ uploadForm.addEventListener("submit", async (event) => {
 });
 
 refreshHistoryButton.addEventListener("click", loadHistory);
+authForm.addEventListener("submit", submitAuthForm);
+showSignInButton.addEventListener("click", () => openAuthForm("sign_in"));
+showSignUpButton.addEventListener("click", () => openAuthForm("sign_up"));
+authCancelButton.addEventListener("click", closeAuthForm);
+authModalCloseButton.addEventListener("click", closeAuthForm);
+authModalOverlay.addEventListener("click", closeAuthForm);
+authModeToggleButton.addEventListener("click", toggleAuthMode);
+authAvatarButton.addEventListener("click", toggleAccountMenu);
+authSignOutButton.addEventListener("click", signOut);
 openHistoryButton.addEventListener("click", openHistoryDrawer);
 closeHistoryButton.addEventListener("click", closeHistoryDrawer);
 historyOverlay.addEventListener("click", closeHistoryDrawer);
@@ -118,9 +161,268 @@ historyModeFilter.addEventListener("change", renderFilteredHistory);
 historyDateFilter.addEventListener("change", renderFilteredHistory);
 startArxivPlaceholderRotation();
 document.addEventListener("click", closeDownloadMenusOnOutsideClick);
+document.addEventListener("click", closeAccountMenuOnOutsideClick);
+document.addEventListener("keydown", handleAuthModalKeydown);
+
+
+async function initAuth() {
+  try {
+    const response = await fetch("/auth/config");
+    const config = await response.json();
+    authState.enabled = Boolean(config.enabled);
+    authBox.hidden = !authState.enabled;
+    if (!authState.enabled) return;
+    if (!window.supabase?.createClient) {
+      setAuthStatus("Auth library did not load.");
+      return;
+    }
+
+    const publishableKey = config.publishable_key || config.anon_key;
+    authState.client = window.supabase.createClient(config.url, publishableKey);
+    const {data} = await authState.client.auth.getSession();
+    authState.session = data?.session || null;
+    authState.ready = true;
+    renderAuthState();
+    authState.client.auth.onAuthStateChange((_event, session) => {
+      authState.session = session;
+      renderAuthState();
+      loadHistory();
+    });
+  } catch (error) {
+    authBox.hidden = false;
+    authState.ready = false;
+    setAuthStatus(error.message || "Auth could not initialize.");
+  }
+}
+
+function isSignedIn() {
+  return !authState.enabled || Boolean(authState.session?.access_token);
+}
+
+function requireAuthMessage() {
+  if (isSignedIn()) return "";
+  return "Sign in before saving or opening analyses.";
+}
+
+function usesAnonymousHistory() {
+  return authState.enabled && !authState.session?.access_token;
+}
+
+function readAnonymousRecords() {
+  try {
+    const records = JSON.parse(window.localStorage.getItem(ANONYMOUS_HISTORY_KEY) || "[]");
+    return Array.isArray(records) ? records.filter((record) => record && typeof record === "object") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeAnonymousRecords(records) {
+  window.localStorage.setItem(
+    ANONYMOUS_HISTORY_KEY,
+    JSON.stringify(records.slice(0, ANONYMOUS_HISTORY_LIMIT)),
+  );
+}
+
+function anonymousRecordId() {
+  const randomPart = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `local-${randomPart}`;
+}
+
+function saveAnonymousAnalysis(result, filename) {
+  const record = {
+    local_id: anonymousRecordId(),
+    filename,
+    created_at: new Date().toISOString(),
+    result,
+  };
+  writeAnonymousRecords([record, ...readAnonymousRecords()]);
+  return record;
+}
+
+function anonymousHistorySummary(record) {
+  const result = record.result || {};
+  const summary = result.document_summary || {};
+  const source = result.source_metadata || {};
+  return {
+    local: true,
+    local_id: record.local_id,
+    filename: record.filename,
+    paper_title: source.title || result.paper_title || summary.title,
+    created_at: record.created_at || result.generated_at || result.submitted_at,
+    summary_mode: result.summary_mode,
+    processing_seconds: result.processing_seconds,
+    summary: summary.summary || "",
+  };
+}
+
+function getAnonymousRecord(localId) {
+  return readAnonymousRecords().find((record) => record.local_id === localId) || null;
+}
+
+function deleteAnonymousRecord(localId) {
+  writeAnonymousRecords(readAnonymousRecords().filter((record) => record.local_id !== localId));
+}
+
+function authHeaders(headers = {}) {
+  if (!authState.enabled || !authState.session?.access_token) return headers;
+  return {
+    ...headers,
+    Authorization: `Bearer ${authState.session.access_token}`,
+  };
+}
+
+function withAccessToken(url) {
+  if (!authState.enabled || !authState.session?.access_token) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}access_token=${encodeURIComponent(authState.session.access_token)}`;
+}
+
+async function apiFetch(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    headers: authHeaders(options.headers || {}),
+  });
+}
+
+function renderAuthState() {
+  if (!authState.enabled) return;
+  const email = authState.session?.user?.email || "";
+  authEntry.hidden = Boolean(email);
+  authSession.hidden = !email;
+  authUserEmail.textContent = email;
+  authAvatarButton.textContent = accountInitial(email);
+  closeAccountMenu();
+  if (email) {
+    authState.mode = "";
+    authModal.hidden = true;
+    document.body.classList.remove("is-auth-open");
+    setAuthStatus("Signed in.");
+  } else if (!authState.mode) {
+    authModal.hidden = true;
+    document.body.classList.remove("is-auth-open");
+    setAuthStatus("");
+  }
+}
+
+function setAuthStatus(message) {
+  authStatus.textContent = message || "";
+}
+
+function accountInitial(email) {
+  const firstCharacter = String(email || "").trim().charAt(0);
+  return firstCharacter ? firstCharacter.toUpperCase() : "A";
+}
+
+function openAuthForm(mode) {
+  authState.mode = mode;
+  closeAccountMenu();
+  authModal.hidden = false;
+  document.body.classList.add("is-auth-open");
+  authFormTitle.textContent = mode === "sign_up" ? "Create your DeepDoc account" : "Sign in to DeepDoc";
+  authSubmitButton.textContent = "Continue";
+  authModeToggleButton.textContent = mode === "sign_up" ? "Sign in instead" : "Sign up instead";
+  authPasswordInput.autocomplete = mode === "sign_up" ? "new-password" : "current-password";
+  authEmailInput.value = "";
+  authPasswordInput.value = "";
+  authEmailInput.focus();
+  setAuthStatus("");
+}
+
+function closeAuthForm() {
+  authState.mode = "";
+  authModal.hidden = true;
+  document.body.classList.remove("is-auth-open");
+  setAuthStatus("");
+}
+
+function toggleAuthMode() {
+  openAuthForm(authState.mode === "sign_up" ? "sign_in" : "sign_up");
+}
+
+function handleAuthModalKeydown(event) {
+  if (event.key !== "Escape") return;
+  if (!authModal.hidden) {
+    closeAuthForm();
+  }
+  closeAccountMenu();
+}
+
+function toggleAccountMenu(event) {
+  event.stopPropagation();
+  const shouldOpen = authAccountMenu.hidden;
+  authAccountMenu.hidden = !shouldOpen;
+  authAvatarButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+}
+
+function closeAccountMenu() {
+  authAccountMenu.hidden = true;
+  authAvatarButton.setAttribute("aria-expanded", "false");
+}
+
+function closeAccountMenuOnOutsideClick(event) {
+  if (authAccountMenu.hidden || event.target.closest("#authSession")) return;
+  closeAccountMenu();
+}
+
+async function submitAuthForm(event) {
+  event.preventDefault();
+  if (!authState.client || !authState.ready) {
+    setAuthStatus("Auth is still loading. Try again in a moment.");
+    return;
+  }
+  const email = authEmailInput.value.trim();
+  const password = authPasswordInput.value;
+  if (!email || !password) {
+    setAuthStatus("Enter both email and password.");
+    return;
+  }
+  setAuthControlsDisabled(true);
+  setAuthStatus(authState.mode === "sign_up" ? "Creating account..." : "Signing in...");
+  try {
+    const {error} = authState.mode === "sign_up"
+      ? await authState.client.auth.signUp({email, password})
+      : await authState.client.auth.signInWithPassword({email, password});
+    if (error) {
+      setAuthStatus(error.message);
+    } else if (authState.mode === "sign_up") {
+      setAuthStatus("Check your email if confirmation is enabled.");
+    } else {
+      closeAuthForm();
+      setAuthStatus("Signed in.");
+    }
+  } catch (error) {
+    setAuthStatus(error.message || "Auth failed.");
+  } finally {
+    setAuthControlsDisabled(false);
+  }
+}
+
+async function signOut() {
+  if (!authState.client || !authState.ready) {
+    setAuthStatus("Auth is still loading. Try again in a moment.");
+    return;
+  }
+  setAuthControlsDisabled(true);
+  closeAccountMenu();
+  await authState.client.auth.signOut();
+  setAuthControlsDisabled(false);
+  historyItems = [];
+  renderFilteredHistory();
+}
+
+function setAuthControlsDisabled(disabled) {
+  authForm.querySelectorAll("input, button").forEach((control) => {
+    control.disabled = disabled;
+  });
+  showSignInButton.disabled = disabled;
+  authAvatarButton.disabled = disabled;
+  authSignOutButton.disabled = disabled;
+}
 
 
 function openHistoryDrawer() {
+  closeAccountMenu();
   document.body.classList.add("is-history-open");
   historyPanel.setAttribute("aria-hidden", "false");
   historyOverlay.hidden = false;
@@ -368,7 +670,7 @@ async function handleArxivResultClick(event) {
   button.textContent = "Analyzing";
 
   try {
-    const response = await fetch("/arxiv/analyze", {
+    const response = await apiFetch("/arxiv/analyze", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
@@ -385,6 +687,9 @@ async function handleArxivResultClick(event) {
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.detail || `arXiv analysis failed with status ${response.status}`);
+    }
+    if (usesAnonymousHistory()) {
+      saveAnonymousAnalysis(payload, `arxiv-${item.arxiv_id}.pdf`);
     }
     renderResult(payload, `arxiv-${item.arxiv_id}.pdf`);
     await loadHistory();
@@ -468,6 +773,11 @@ function toggleList(button) {
 }
 
 async function reanalyzeExistingAnalysis(analysisId, button, summaryMode = "standard") {
+  const authMessage = requireAuthMessage();
+  if (authMessage) {
+    renderError(authMessage);
+    return;
+  }
   const modeControl = resultPanel.querySelector('[data-field="reanalyzeMode"]');
   button.disabled = true;
   if (modeControl) modeControl.disabled = true;
@@ -476,7 +786,7 @@ async function reanalyzeExistingAnalysis(analysisId, button, summaryMode = "stan
 
   try {
     const params = new URLSearchParams({summary_mode: summaryMode || "standard"});
-    const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}/reanalyze?${params.toString()}`, {
+    const response = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/reanalyze?${params.toString()}`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({summary_mode: summaryMode || "standard"}),
@@ -550,8 +860,8 @@ function renderResult(result, fallbackFilename = "Analysis Result") {
   const reanalyzeMode = node.querySelector('[data-field="reanalyzeMode"]');
   if (reanalyzeMode) reanalyzeMode.value = normalizeSummaryMode(result.summary_mode);
   if (analysisId) {
-    download.href = `/analyses/${analysisId}/download`;
-    downloadMarkdown.href = `/analyses/${analysisId}/markdown/download`;
+    download.href = withAccessToken(`/analyses/${analysisId}/download`);
+    downloadMarkdown.href = withAccessToken(`/analyses/${analysisId}/markdown/download`);
     downloadMarkdown.download = "";
     download.download = "";
   } else {
@@ -619,7 +929,7 @@ function renderPdfViewer(root, analysisId) {
     return;
   }
 
-  const pdfUrl = `/analyses/${encodeURIComponent(analysisId)}/pdf`;
+  const pdfUrl = withAccessToken(`/analyses/${encodeURIComponent(analysisId)}/pdf`);
   panel.dataset.pdfBaseUrl = pdfUrl;
   viewer.hidden = true;
   viewer.removeAttribute("src");
@@ -634,7 +944,7 @@ function renderPdfViewer(root, analysisId) {
 
 async function checkPdfAvailability(viewer, placeholder, pdfUrl, downloadPdf) {
   try {
-    const response = await fetch(pdfUrl, {method: "HEAD"});
+    const response = await apiFetch(pdfUrl, {method: "HEAD"});
     if (!response.ok) throw new Error("PDF unavailable");
     viewer.hidden = false;
     viewer.src = pdfViewerUrl(pdfUrl, 1);
@@ -691,7 +1001,8 @@ function navigateToEvidencePage(page, activeEvidenceItem = null) {
 }
 
 function pdfViewerUrl(pdfUrl, page) {
-  return `${pdfUrl}?view=${Date.now()}#page=${encodeURIComponent(page)}`;
+  const separator = pdfUrl.includes("?") ? "&" : "?";
+  return `${pdfUrl}${separator}view=${Date.now()}#page=${encodeURIComponent(page)}`;
 }
 
 function markActiveEvidence(activeEvidenceItem) {
@@ -702,6 +1013,11 @@ function markActiveEvidence(activeEvidenceItem) {
 }
 
 async function generateVideo(analysisId, scriptContainer, statusContainer, downloadLink, button, slideCountControl) {
+  const authMessage = requireAuthMessage();
+  if (authMessage) {
+    statusContainer.textContent = authMessage;
+    return;
+  }
   const selectedSlideCount = selectedSlides(slideCountControl);
   const currentScriptSlides = Number(scriptContainer?.dataset.slideCount || 0);
   if (!currentScriptSlides || currentScriptSlides !== selectedSlideCount) {
@@ -718,7 +1034,7 @@ async function generateVideo(analysisId, scriptContainer, statusContainer, downl
   let videoGenerated = false;
 
   try {
-    const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}/video`, {
+    const response = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/video`, {
       method: "POST",
     });
 
@@ -750,21 +1066,21 @@ function renderVideoScriptDownload(downloadLink, slidesLink, slidesHtmlLink, ana
   }
 
   if (slidesHtmlLink) {
-    slidesHtmlLink.href = `/analyses/${encodeURIComponent(analysisId)}/slides-html/download`;
+    slidesHtmlLink.href = withAccessToken(`/analyses/${encodeURIComponent(analysisId)}/slides-html/download`);
     slidesHtmlLink.dataset.slideCount = String(slideCount);
     slidesHtmlLink.textContent = `Slides HTML · ${slideCount} slides`;
     slidesHtmlLink.hidden = false;
   }
 
   if (slidesLink) {
-    slidesLink.href = `/analyses/${encodeURIComponent(analysisId)}/slides/download`;
+    slidesLink.href = withAccessToken(`/analyses/${encodeURIComponent(analysisId)}/slides/download`);
     slidesLink.dataset.slideCount = String(slideCount);
     slidesLink.textContent = `Slides Markdown · ${slideCount} slides`;
     slidesLink.hidden = false;
   }
 
   if (downloadLink) {
-    downloadLink.href = `/analyses/${encodeURIComponent(analysisId)}/video-script/download`;
+    downloadLink.href = withAccessToken(`/analyses/${encodeURIComponent(analysisId)}/video-script/download`);
     downloadLink.dataset.slideCount = String(slideCount);
     downloadLink.textContent = `Slides JSON · ${slideCount} slides`;
     downloadLink.hidden = false;
@@ -780,7 +1096,7 @@ function renderVideoResult(statusContainer, downloadLink, video) {
 
   const slideCount = Number(video.scene_count || 0);
   statusContainer.textContent = `Generated ${slideCount || ""}-slide video at ${formatDate(video.generated_at)}.`;
-  downloadLink.href = video.video_url;
+  downloadLink.href = withAccessToken(video.video_url);
   downloadLink.dataset.slideCount = String(slideCount);
   downloadLink.dataset.generatedAt = video.generated_at || "";
   downloadLink.textContent = `MP4 Video · ${slideCount} slides`;
@@ -873,7 +1189,12 @@ function updateVideoArtifactAvailability(root, options = {}) {
 }
 
 async function generateVideoScript(analysisId, container, button, slideCountControl, downloadScriptLink, downloadVideoLink, downloadSlidesLink, downloadSlidesHtmlLink) {
+  const authMessage = requireAuthMessage();
   const statusContainer = resultPanel.querySelector('[data-field="videoStatus"]');
+  if (authMessage) {
+    if (statusContainer) statusContainer.textContent = authMessage;
+    return;
+  }
   const slideCount = selectedSlides(slideCountControl);
   button.disabled = true;
   button.dataset.busy = "true";
@@ -889,7 +1210,7 @@ async function generateVideoScript(analysisId, container, button, slideCountCont
   let slidesGenerated = false;
 
   try {
-    const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}/video-script?slide_count=${encodeURIComponent(slideCount)}`, {
+    const response = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/video-script?slide_count=${encodeURIComponent(slideCount)}`, {
       method: "POST",
     });
 
@@ -1238,8 +1559,13 @@ function bindTabs(root) {
 }
 
 async function loadHistory() {
+  if (usesAnonymousHistory()) {
+    historyItems = readAnonymousRecords().map(anonymousHistorySummary);
+    renderFilteredHistory();
+    return;
+  }
   try {
-    const response = await fetch("/analyses");
+    const response = await apiFetch("/analyses");
     if (!response.ok) {
       throw new Error("Could not load history.");
     }
@@ -1282,18 +1608,22 @@ function renderHistory(items) {
     const card = document.createElement("article");
     card.className = "history-item";
     const displayTitle = item.paper_title || item.filename || "Untitled PDF";
+    const itemId = item.local ? item.local_id : item.analysis_id;
+    const downloadAction = item.local
+      ? '<span class="result-meta">Browser only</span>'
+      : `<a href="${withAccessToken(`/analyses/${encodeURIComponent(item.analysis_id || "")}/download`)}">Download</a>`;
     card.innerHTML = `
       <strong>${escapeHtml(displayTitle)}</strong>
       ${item.paper_title && item.filename ? `<p class="result-meta">${escapeHtml(item.filename)}</p>` : ""}
       <p>${escapeHtml(formatMode(item.summary_mode))} · ${escapeHtml(formatDate(item.created_at))} · ${escapeHtml(formatSeconds(item.processing_seconds))}</p>
       <p>${escapeHtml(trimText(item.summary || "", 145))}</p>
       <div class="history-actions">
-        <button type="button" data-open="${escapeHtml(item.analysis_id || "")}">Open</button>
-        <a href="/analyses/${encodeURIComponent(item.analysis_id || "")}/download">Download</a>
-        <button class="danger-action" type="button" data-delete="${escapeHtml(item.analysis_id || "")}">Delete</button>
+        <button type="button" data-open="${escapeHtml(itemId || "")}">Open</button>
+        ${downloadAction}
+        <button class="danger-action" type="button" data-delete="${escapeHtml(itemId || "")}">Delete</button>
       </div>
     `;
-    card.querySelector("[data-open]").addEventListener("click", () => openAnalysis(item.analysis_id));
+    card.querySelector("[data-open]").addEventListener("click", () => openAnalysisItem(item));
     card.querySelector("[data-delete]").addEventListener("click", () => deleteHistoryItem(item));
     historyList.appendChild(card);
   });
@@ -1309,12 +1639,30 @@ function historySearchText(item) {
   ].join(" "));
 }
 
+async function openAnalysisItem(item) {
+  if (item?.local) {
+    const record = getAnonymousRecord(item.local_id);
+    if (!record) {
+      renderError("This browser-only analysis was not found.");
+      return;
+    }
+    renderResult(record.result || {}, record.filename || "Browser Analysis");
+    return;
+  }
+  return openAnalysis(item?.analysis_id);
+}
+
 async function openAnalysis(analysisId) {
   if (!analysisId) return;
+  const authMessage = requireAuthMessage();
+  if (authMessage) {
+    renderError(authMessage);
+    return;
+  }
 
   setBusy(true, "Loading saved analysis...");
   try {
-    const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}`);
+    const response = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}`);
     if (!response.ok) {
       throw new Error("Saved analysis was not found.");
     }
@@ -1332,7 +1680,22 @@ async function openAnalysis(analysisId) {
 
 async function deleteHistoryItem(item) {
   const analysisId = item?.analysis_id;
-  if (!analysisId) return;
+  const localId = item?.local_id;
+  if (!analysisId && !localId) return;
+  if (item?.local) {
+    const displayTitle = item.paper_title || item.filename || "this analysis";
+    const confirmed = window.confirm(`Delete "${displayTitle}" from this browser?`);
+    if (!confirmed) return;
+    deleteAnonymousRecord(localId);
+    historyItems = readAnonymousRecords().map(anonymousHistorySummary);
+    renderFilteredHistory();
+    return;
+  }
+  const authMessage = requireAuthMessage();
+  if (authMessage) {
+    renderError(authMessage);
+    return;
+  }
 
   const displayTitle = item.paper_title || item.filename || "this analysis";
   const confirmed = window.confirm(`Delete "${displayTitle}" and its stored PDF / generated files from this server?`);
@@ -1340,7 +1703,7 @@ async function deleteHistoryItem(item) {
 
   setBusy(true, "Deleting saved analysis...");
   try {
-    const response = await fetch(`/analyses/${encodeURIComponent(analysisId)}`, {
+    const response = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}`, {
       method: "DELETE",
     });
     const payload = await response.json().catch(() => ({}));

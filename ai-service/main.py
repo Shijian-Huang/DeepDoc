@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +37,13 @@ from storage import (
     save_analysis_record,
     save_video_result,
     save_video_script,
+    storage_backend_name,
+)
+from supabase_auth import (
+    current_user_id_from_request,
+    is_supabase_auth_enabled,
+    optional_user_id_from_request,
+    supabase_public_config,
 )
 from video_generator import (
     PIPER_BIN,
@@ -46,7 +53,7 @@ from video_generator import (
     generate_video_from_script,
 )
 
-APP_VERSION = "mode-purpose-20260707"
+APP_VERSION = "supabase-auth-storage-20260715"
 
 app = FastAPI(
     title="DeepDoc",
@@ -82,6 +89,8 @@ def analyze_pdf_file(
     filename: str,
     summary_mode: str = "standard",
     source_metadata: dict | None = None,
+    user_id: str | None = None,
+    persist: bool = True,
 ) -> dict:
     _ensure_gemini_configured()
 
@@ -107,13 +116,37 @@ def analyze_pdf_file(
             summary = result.get("document_summary")
             if isinstance(summary, dict):
                 summary["title"] = source_title
-    record = save_analysis(filename, result, source_pdf_path=Path(file_path))
+    if not persist:
+        return result
+    record = save_analysis(filename, result, source_pdf_path=Path(file_path), user_id=user_id)
     return record["result"]
 
 
 def _ensure_gemini_configured() -> None:
     if not is_gemini_configured():
         raise HTTPException(status_code=503, detail=gemini_configuration_error())
+
+
+def _current_user_id(request: Request, access_token: str | None = None) -> str | None:
+    if storage_backend_name() == "supabase" and not is_supabase_auth_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase storage is configured, but Supabase auth is incomplete.",
+        )
+    return current_user_id_from_request(request, access_token=access_token)
+
+
+def _optional_user_id(request: Request, access_token: str | None = None) -> str | None:
+    if storage_backend_name() == "supabase" and not is_supabase_auth_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase storage is configured, but Supabase auth is incomplete.",
+        )
+    return optional_user_id_from_request(request, access_token=access_token)
+
+
+def _should_persist_analysis(user_id: str | None) -> bool:
+    return not is_supabase_auth_enabled() or bool(user_id)
 
 
 def _remove_file_if_exists(path: Path) -> None:
@@ -722,7 +755,11 @@ def _references_need_legacy_repair(references: object) -> bool:
     )
 
 
-def _record_with_repaired_references(record: dict, persist: bool = True) -> dict:
+def _record_with_repaired_references(
+    record: dict,
+    persist: bool = True,
+    user_id: str | None = None,
+) -> dict:
     result = record.get("result")
     if not isinstance(result, dict) or not _references_need_legacy_repair(result.get("references")):
         return record
@@ -748,7 +785,7 @@ def _record_with_repaired_references(record: dict, persist: bool = True) -> dict
     repaired_result["references_repaired_from_pdf"] = True
     if persist:
         analysis_id = str(repaired_record.get("analysis_id") or repaired_result.get("analysis_id") or "")
-        save_analysis_record(analysis_id, repaired_record)
+        save_analysis_record(analysis_id, repaired_record, user_id=user_id)
     return repaired_record
 
 
@@ -770,17 +807,28 @@ async def health_check():
         "ffmpeg_available": ffmpeg_ready,
         "tts": tts_health,
         "mp4_ready": mp4_ready,
+        "storage_backend": storage_backend_name(),
+        "supabase_auth_enabled": is_supabase_auth_enabled(),
         "upload_dir": str(UPLOAD_DIR),
         "static_dir": str(STATIC_DIR),
     }
 
 
+@app.get("/auth/config")
+async def auth_config():
+    return supabase_public_config()
+
+
 @app.post("/analyze-pdf")
 async def analyze_pdf(
+    request: Request,
     file: UploadFile = File(...),
     summary_mode: str = Form("standard"),
+    access_token: str | None = Query(None),
 ):
     _ensure_gemini_configured()
+    user_id = _optional_user_id(request, access_token=access_token)
+    should_persist = _should_persist_analysis(user_id)
 
     filename = Path(file.filename or "uploaded.pdf").name
     if Path(filename).suffix.lower() != ".pdf":
@@ -793,7 +841,16 @@ async def analyze_pdf(
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        return analyze_pdf_file(file_path, filename, summary_mode=summary_mode)
+        result = analyze_pdf_file(
+            file_path,
+            filename,
+            summary_mode=summary_mode,
+            user_id=user_id,
+            persist=should_persist,
+        )
+        if not should_persist:
+            _remove_file_if_exists(file_path)
+        return result
     except Exception:
         _remove_file_if_exists(file_path)
         raise
@@ -824,8 +881,14 @@ async def arxiv_search(
 
 
 @app.post("/arxiv/analyze")
-async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
+async def analyze_arxiv_paper(
+    request: ArxivAnalyzeRequest,
+    http_request: Request,
+    access_token: str | None = Query(None),
+):
     _ensure_gemini_configured()
+    user_id = _optional_user_id(http_request, access_token=access_token)
+    should_persist = _should_persist_analysis(user_id)
 
     if not is_valid_arxiv_pdf_url(request.pdf_url):
         raise HTTPException(status_code=400, detail="Invalid arXiv PDF URL.")
@@ -845,10 +908,12 @@ async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
         raise HTTPException(status_code=error.status_code, detail=str(error)) from error
 
     try:
-        return analyze_pdf_file(
+        result = analyze_pdf_file(
             pdf_path,
             f"arxiv-{request.arxiv_id}.pdf",
             summary_mode=request.summary_mode,
+            user_id=user_id,
+            persist=should_persist,
             source_metadata={
                 "source": "arxiv",
                 "arxiv_id": request.arxiv_id,
@@ -861,6 +926,9 @@ async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
                 "pdf_url": request.pdf_url,
             },
         )
+        if not should_persist:
+            _remove_file_if_exists(pdf_path)
+        return result
     except HTTPException:
         _remove_file_if_exists(pdf_path)
         raise
@@ -870,17 +938,21 @@ async def analyze_arxiv_paper(request: ArxivAnalyzeRequest):
 
 
 @app.get("/analyses")
-async def get_analyses():
-    return {"analyses": list_analyses()}
+async def get_analyses(request: Request, access_token: str | None = Query(None)):
+    user_id = _current_user_id(request, access_token=access_token)
+    return {"analyses": list_analyses(user_id=user_id)}
 
 
 @app.post("/analyses/{analysis_id}/reanalyze")
 async def reanalyze_existing_pdf(
+    request: Request,
     analysis_id: str,
     summary_mode: str = Query("same", max_length=24),
-    request: ReanalyzeRequest | None = None,
+    reanalyze_request: ReanalyzeRequest | None = None,
+    access_token: str | None = Query(None),
 ):
-    record = get_analysis(analysis_id)
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
@@ -890,7 +962,7 @@ async def reanalyze_existing_pdf(
 
     result = record.get("result", {})
     previous_summary_mode = result.get("summary_mode") or "standard"
-    requested_summary_mode = request.summary_mode if request else summary_mode
+    requested_summary_mode = reanalyze_request.summary_mode if reanalyze_request else summary_mode
     selected_summary_mode = (
         previous_summary_mode
         if requested_summary_mode in {"", "same"}
@@ -900,16 +972,20 @@ async def reanalyze_existing_pdf(
         pdf_path,
         Path(record.get("filename") or pdf_path.name).name,
         summary_mode=selected_summary_mode,
+        user_id=user_id,
         source_metadata=result.get("source_metadata") if isinstance(result.get("source_metadata"), dict) else None,
     )
 
 
 @app.post("/analyses/{analysis_id}/video-script")
 async def create_video_script(
+    request: Request,
     analysis_id: str,
     slide_count: int = Query(10, ge=3, le=20),
+    access_token: str | None = Query(None),
 ):
-    record = get_analysis(analysis_id)
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
     if not is_gemini_configured():
@@ -917,7 +993,7 @@ async def create_video_script(
 
     result = record.get("result", {})
     video_script = generate_video_script(result, slide_count=slide_count)
-    updated_record = save_video_script(analysis_id, video_script)
+    updated_record = save_video_script(analysis_id, video_script, user_id=user_id)
     if not updated_record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
@@ -928,8 +1004,13 @@ async def create_video_script(
 
 
 @app.post("/analyses/{analysis_id}/video")
-async def create_video(analysis_id: str):
-    record = get_analysis(analysis_id)
+async def create_video(
+    request: Request,
+    analysis_id: str,
+    access_token: str | None = Query(None),
+):
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
@@ -947,7 +1028,7 @@ async def create_video(analysis_id: str):
     except VideoGenerationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    updated_record = save_video_result(analysis_id, video_result)
+    updated_record = save_video_result(analysis_id, video_result, user_id=user_id)
     if not updated_record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
@@ -958,8 +1039,13 @@ async def create_video(analysis_id: str):
 
 
 @app.get("/analyses/{analysis_id}/video/download")
-async def download_video(analysis_id: str):
-    record = get_analysis(analysis_id)
+async def download_video(
+    request: Request,
+    analysis_id: str,
+    access_token: str | None = Query(None),
+):
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
@@ -980,8 +1066,13 @@ async def download_video(analysis_id: str):
 
 
 @app.get("/analyses/{analysis_id}/video-script/download")
-async def download_video_script(analysis_id: str):
-    record = get_analysis(analysis_id)
+async def download_video_script(
+    request: Request,
+    analysis_id: str,
+    access_token: str | None = Query(None),
+):
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
@@ -1002,12 +1093,17 @@ async def download_video_script(analysis_id: str):
 
 
 @app.get("/analyses/{analysis_id}/markdown/download")
-async def download_analysis_markdown(analysis_id: str):
-    record = get_analysis(analysis_id)
+async def download_analysis_markdown(
+    request: Request,
+    analysis_id: str,
+    access_token: str | None = Query(None),
+):
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    record = _record_with_repaired_references(record)
+    record = _record_with_repaired_references(record, user_id=user_id)
     content = _analysis_markdown(record, analysis_id)
     return Response(
         content=content,
@@ -1021,8 +1117,13 @@ async def download_analysis_markdown(analysis_id: str):
 
 
 @app.get("/analyses/{analysis_id}/slides/download")
-async def download_slides_markdown(analysis_id: str):
-    record = get_analysis(analysis_id)
+async def download_slides_markdown(
+    request: Request,
+    analysis_id: str,
+    access_token: str | None = Query(None),
+):
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
@@ -1039,8 +1140,13 @@ async def download_slides_markdown(analysis_id: str):
 
 
 @app.get("/analyses/{analysis_id}/slides-html/download")
-async def download_slides_html(analysis_id: str):
-    record = get_analysis(analysis_id)
+async def download_slides_html(
+    request: Request,
+    analysis_id: str,
+    access_token: str | None = Query(None),
+):
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
@@ -1058,8 +1164,13 @@ async def download_slides_html(analysis_id: str):
 
 @app.head("/analyses/{analysis_id}/pdf")
 @app.get("/analyses/{analysis_id}/pdf")
-async def get_analysis_pdf(analysis_id: str):
-    record = get_analysis(analysis_id)
+async def get_analysis_pdf(
+    request: Request,
+    analysis_id: str,
+    access_token: str | None = Query(None),
+):
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
@@ -1076,12 +1187,17 @@ async def get_analysis_pdf(analysis_id: str):
 
 
 @app.get("/analyses/{analysis_id}/download")
-async def download_analysis(analysis_id: str):
-    record = get_analysis(analysis_id)
+async def download_analysis(
+    request: Request,
+    analysis_id: str,
+    access_token: str | None = Query(None),
+):
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    record = _record_with_repaired_references(record)
+    record = _record_with_repaired_references(record, user_id=user_id)
     content = json.dumps(record, ensure_ascii=False, indent=2)
     return Response(
         content=content,
@@ -1096,19 +1212,27 @@ async def download_analysis(analysis_id: str):
 
 @app.delete("/analyses/{analysis_id}")
 async def delete_saved_analysis(
+    request: Request,
     analysis_id: str,
     delete_files: bool = Query(True, description="Delete uploaded PDFs and generated video files with the history record."),
+    access_token: str | None = Query(None),
 ):
-    deletion_result = delete_analysis(analysis_id, delete_files=delete_files)
+    user_id = _current_user_id(request, access_token=access_token)
+    deletion_result = delete_analysis(analysis_id, delete_files=delete_files, user_id=user_id)
     if not deletion_result:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return deletion_result
 
 
 @app.get("/analyses/{analysis_id}")
-async def get_analysis_by_id(analysis_id: str):
-    record = get_analysis(analysis_id)
+async def get_analysis_by_id(
+    request: Request,
+    analysis_id: str,
+    access_token: str | None = Query(None),
+):
+    user_id = _current_user_id(request, access_token=access_token)
+    record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    return _record_with_repaired_references(record)
+    return _record_with_repaired_references(record, user_id=user_id)
