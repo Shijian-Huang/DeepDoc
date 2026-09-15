@@ -1,0 +1,10 @@
+[
+  {
+    "id": "retrieval-efficiency",
+    "text": "The paper studies retrieval for long technical documents. It introduces a two-stage method that first selects candidate sections with a sparse index and then reranks passages with a compact cross-encoder. On the authors' benchmark, the method improves recall at 20 from 71% to 84% while reducing average reranking work by 38% compared with reranking every passage. The ablation finds that removing section selection eliminates most of the efficiency gain. The authors identify evaluation on scanned documents and non-English corpora as future work."
+  },
+  {
+    "id": "calibrated-review-assistant",
+    "text": "The study presents a review assistant that attaches sentence-level evidence to generated research summaries and abstains when its evidence confidence is below a learned threshold. Its main contribution is a calibration procedure trained without changing the underlying language model. In a blinded evaluation of 120 summaries, reviewers found fewer unsupported claims than in the uncalibrated baseline, although coverage of minor findings decreased. The paper does not claim that the system replaces expert peer review and notes that the evaluation covers only computer-science papers."
+  }
+]
