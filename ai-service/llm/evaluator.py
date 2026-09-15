@@ -54,6 +54,19 @@ def build_evaluation_prompt(document_summary: dict, evidence_packet: str) -> str
        relationships not in the paper are hallucinations.
        Count the total number of distinct factual claims in the summary.
 
+    4. Coherence:
+       Rate how well the summary reads as a logically structured whole on a 1-5 scale.
+       Consider: Are paragraphs ordered sensibly? Do ideas flow with clear transitions?
+       Are there abrupt topic jumps or disjointed segments?
+       1 = incoherent / random ordering, 5 = perfectly structured and flowing.
+
+    5. Consistency:
+       Rate how internally consistent the summary is on a 1-5 scale.
+       Consider: Does the summary contradict itself? Are claims, terminology, and framing
+       uniform throughout? Does it say one thing in one paragraph and something different
+       in another?
+       1 = frequent contradictions, 5 = fully consistent throughout.
+
     Return ONLY valid JSON:
     {{
       "key_ideas": {{
@@ -75,7 +88,15 @@ def build_evaluation_prompt(document_summary: dict, evidence_packet: str) -> str
           "evidence": null
         }}
       ],
-      "total_summary_claims": 0
+      "total_summary_claims": 0,
+      "coherence": {{
+        "score": 0,
+        "justification": "..."
+      }},
+      "consistency": {{
+        "score": 0,
+        "justification": "..."
+      }}
     }}
 
     --- PAPER TEXT ---
@@ -116,10 +137,17 @@ def calculate_evaluation_scores(evaluation: dict) -> dict:
     hallucination_count = len(hallucinated_claims) if isinstance(hallucinated_claims, list) else 0
     hallucination_rate = hallucination_count / total_claims if total_claims > 0 else 0.0
 
+    coherence_raw = evaluation.get("coherence", {})
+    consistency_raw = evaluation.get("consistency", {})
+    coherence_score = max(0.0, min(1.0, (coherence_raw.get("score", 0) - 1) / 4)) if isinstance(coherence_raw, dict) else 0.0
+    consistency_score = max(0.0, min(1.0, (consistency_raw.get("score", 0) - 1) / 4)) if isinstance(consistency_raw, dict) else 0.0
+
     return {
         "key_ideas_coverage": round(key_ideas_score, 4),
         "contributions_coverage": round(contributions_score, 4),
         "hallucination_rate": round(hallucination_rate, 4),
+        "coherence": round(coherence_score, 4),
+        "consistency": round(consistency_score, 4),
     }
 
 

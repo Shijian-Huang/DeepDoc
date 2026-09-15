@@ -3199,10 +3199,15 @@ function renderEvaluationScores(container, data) {
   const contrib = scores.contributions_coverage;
   const halluc = scores.hallucination_rate;
 
+  const coherence = scores.coherence;
+  const consistency = scores.consistency;
+
   const rows = [
     ["Key Ideas Coverage", coverage, false],
     ["Contributions Coverage", contrib, false],
     ["Hallucination Rate", halluc, true],
+    ["Coherence", coherence, false],
+    ["Consistency", consistency, false],
   ];
 
   let html = '<h4>Evaluation</h4><div class="eval-scores">';
