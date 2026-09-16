@@ -1,11 +1,13 @@
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from llm.evaluator import EvidencePacket, EvaluationError, SummaryEvaluator
+from utils.summary_prompt import build_research_summary_prompt
 
 
 class FakeJudge:
@@ -44,12 +46,17 @@ class SummaryEvaluatorTests(unittest.TestCase):
 
         result = evaluator.evaluate()
 
-        self.assertEqual(len(result["results"]), 4)
-        self.assertEqual(result["results"][0]["evaluation"], {
-            "avg_score": 0.6625,
-            "key_ideas_score": 0.7,
-            "contributions_score": 0.625,
-            "hallucination_score": 0.1,
+        self.assertEqual(list(result), ["model-a", "model-b"])
+        self.assertEqual(len(result["model-a"]), 2)
+        self.assertEqual(len(result["model-b"]), 2)
+        self.assertEqual(result["model-a"][0], {
+            "packet_id": "paper-section",
+            "evaluation": {
+                "avg_score": 0.5196,
+                "key_ideas_score": 0.7,
+                "contributions_score": 0.625,
+                "hallucination_score": 0.1429,
+            },
         })
         json.dumps(result, allow_nan=False)
 
@@ -58,7 +65,7 @@ class SummaryEvaluatorTests(unittest.TestCase):
             {"model-a": "Summary"},
             [self.packet],
             judge=FakeJudge(),
-        ).evaluate("detailed")["results"][0]["evaluation"]
+        ).evaluate("detailed")["model-a"][0]["evaluation"]
 
         self.assertEqual(result["key_ideas"], {
             "covered": 3,
@@ -71,8 +78,8 @@ class SummaryEvaluatorTests(unittest.TestCase):
     def test_model_names_use_injected_summary_generator(self):
         calls = []
 
-        def generate(model, packet):
-            calls.append((model, packet.id))
+        def generate(model, prompt):
+            calls.append((model, prompt))
             return {"summary": f"Summary from {model}"}
 
         evaluator = SummaryEvaluator(
@@ -83,9 +90,10 @@ class SummaryEvaluatorTests(unittest.TestCase):
         )
         evaluator.evaluate()
 
+        expected_prompt = build_research_summary_prompt(self.packet.text, "standard")
         self.assertEqual(calls, [
-            ("local-model", "paper-section"),
-            ("remote-model", "paper-section"),
+            ("local-model", expected_prompt),
+            ("remote-model", expected_prompt),
         ])
 
     def test_model_names_without_generator_are_rejected(self):
@@ -95,12 +103,17 @@ class SummaryEvaluatorTests(unittest.TestCase):
     def test_default_packets_are_used_when_packets_are_omitted(self):
         evaluator = SummaryEvaluator({"model-a": "Summary"}, judge=FakeJudge())
         result = evaluator.evaluate()
-        self.assertGreaterEqual(len(result["results"]), 1)
+        self.assertGreaterEqual(len(result["model-a"]), 1)
+
     def test_multiple_callable_models_are_supported(self):
-        def model_a(packet):
+        prompts = []
+
+        def model_a(prompt):
+            prompts.append(prompt)
             return {"summary": "Summary A"}
 
-        def model_b(packet):
+        def model_b(prompt):
+            prompts.append(prompt)
             return {"summary": "Summary B"}
 
         evaluator = SummaryEvaluator(
@@ -109,7 +122,82 @@ class SummaryEvaluatorTests(unittest.TestCase):
             judge=FakeJudge(),
         )
         result = evaluator.evaluate()
+        self.assertEqual(list(result), ["model-a", "model-b"])
+        self.assertEqual(len(result["model-a"]), 1)
+        self.assertEqual(len(result["model-b"]), 1)
+        self.assertEqual(prompts[0], prompts[1])
+        self.assertIn(self.packet.text, prompts[0])
+
+    def test_average_mode_averages_packet_scores_per_model(self):
+        class PacketJudge:
+            def evaluate(inner_self, summary, evidence_packet):
+                covered = 5 if evidence_packet.id == "complete" else 0
+                contribution_covered = 4 if evidence_packet.id == "complete" else 0
+                hallucinations = [] if evidence_packet.id == "complete" else [
+                    {"claim": "Unsupported", "reason": "Absent", "evidence": None}
+                ]
+                return {
+                    "key_ideas": {
+                        "covered": covered,
+                        "partial_covered": 0,
+                        "expected": 5,
+                        "missing": [] if covered else ["a", "b", "c", "d", "e"],
+                    },
+                    "contributions": {
+                        "covered": contribution_covered,
+                        "partial_covered": 0,
+                        "expected": 4,
+                        "missing": [] if contribution_covered else ["a", "b", "c", "d"],
+                    },
+                    "hallucinated_claims": hallucinations,
+                }
+
+        result = SummaryEvaluator(
+            {"model-a": "Summary", "model-b": "Another summary"},
+            [
+                {"id": "complete", "text": "First excerpt."},
+                {"id": "empty", "text": "Second excerpt."},
+            ],
+            judge=PacketJudge(),
+        ).evaluate("average")
+
         self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0], {
+            "model": "model-a",
+            "packet_count": 2,
+            "evaluation": {
+                "avg_score": 0.5,
+                "key_ideas_score": 0.5,
+                "contributions_score": 0.5,
+                "hallucination_score": 0.0,
+            },
+        })
+
+    def test_average_mode_saves_visualization_in_evaluation_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = SummaryEvaluator(
+                {"model-a": "Summary", "model-b": "Another summary"},
+                [self.packet],
+                judge=FakeJudge(),
+                evaluation_dir=temp_dir,
+            ).evaluate("average", visualize=True)
+
+            chart_path = Path(result["visualization_path"])
+            self.assertEqual(chart_path.parent, Path(temp_dir).resolve())
+            self.assertEqual(chart_path.suffix, ".png")
+            self.assertTrue(chart_path.is_file())
+            self.assertEqual(chart_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertNotIn("visualization", result)
+            json.dumps(result, allow_nan=False)
+
+    def test_visualization_is_rejected_outside_average_mode(self):
+        evaluator = SummaryEvaluator(
+            {"model-a": "Summary"},
+            [self.packet],
+            judge=FakeJudge(),
+        )
+        with self.assertRaises(EvaluationError):
+            evaluator.evaluate("default", visualize=True)
 
 
 if __name__ == "__main__":

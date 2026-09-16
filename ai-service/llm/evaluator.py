@@ -4,10 +4,16 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import gettempdir
 from typing import Any, Callable, Mapping, Protocol, Sequence
+from uuid import uuid4
+
+from utils.summary_prompt import build_research_summary_prompt, normalize_summary_mode
 
 DEFAULT_PACKETS_PATH = Path(__file__).resolve().parents[1] / "evaluation" / "default_packets.json"
+DEFAULT_EVALUATION_DIR = Path(__file__).resolve().parents[1] / "data" / "eval"
 try:
     from dotenv import load_dotenv
 
@@ -34,8 +40,15 @@ class EvaluationJudge(Protocol):
 
 
 SummaryValue = str | Mapping[str, Any]
-SummaryProvider = SummaryValue | Callable[[EvidencePacket], SummaryValue]
-SummaryGenerator = Callable[[str, EvidencePacket], SummaryValue]
+SummaryProvider = SummaryValue | Callable[[str], SummaryValue]
+SummaryGenerator = Callable[[str, str], SummaryValue]
+
+SCORE_FIELDS = (
+    "avg_score",
+    "key_ideas_score",
+    "contributions_score",
+    "hallucination_score",
+)
 
 
 class GeminiJudge:
@@ -48,7 +61,7 @@ class GeminiJudge:
         api_key: str | None = None,
         client: Any | None = None,
     ) -> None:
-        self.model = model or os.getenv("GEMINI_EVALUATOR_MODEL", "gemini-2.5-flash-lite")
+        self.model = model or os.getenv("GEMINI_EVALUATOR_MODEL", "gemini-3.5-flash-lite")
         self._api_key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY")
         self._client = client
 
@@ -96,8 +109,9 @@ class SummaryEvaluator:
     """Evaluate every model summary against every selected evidence packet.
 
     ``models`` is normally a mapping from model name to either a generated
-    summary or a callable that generates a summary for a packet.  A model name
-    (or sequence of names) can instead be supplied with ``summary_generator``.
+    summary or a callable that generates a summary from the shared prompt. A
+    model name (or sequence of names) can instead be supplied with
+    ``summary_generator``.
     """
 
     def __init__(
@@ -107,12 +121,16 @@ class SummaryEvaluator:
         *,
         judge: EvaluationJudge | None = None,
         summary_generator: SummaryGenerator | None = None,
+        summary_mode: str = "standard",
         default_packets_path: str | Path | None = None,
+        evaluation_dir: str | Path | None = None,
     ) -> None:
         self._model_sources = _normalize_models(models, summary_generator)
         self._judge = judge or GeminiJudge()
         self._summary_generator = summary_generator
+        self._summary_mode = normalize_summary_mode(summary_mode)
         self._default_packets_path = Path(default_packets_path or DEFAULT_PACKETS_PATH)
+        self._evaluation_dir = Path(evaluation_dir or DEFAULT_EVALUATION_DIR)
         self._packets = (
             _normalize_packets(evidence_packets)
             if evidence_packets is not None
@@ -121,12 +139,14 @@ class SummaryEvaluator:
         if not self._packets:
             raise EvaluationError("At least one evidence packet is required.")
 
-    def evaluate(self, mode: str = "default") -> dict[str, Any]:
+    def evaluate(self, mode: str = "default", *, visualize: bool = False) -> dict[str, Any]:
         """Return a JSON-compatible result for all model/packet combinations."""
-        if mode not in {"default", "detailed"}:
-            raise EvaluationError("mode must be either 'default' or 'detailed'.")
+        if mode not in {"default", "detailed", "average"}:
+            raise EvaluationError("mode must be 'default', 'detailed', or 'average'.")
+        if visualize and mode != "average":
+            raise EvaluationError("Visualization is only available in average mode.")
 
-        results: list[dict[str, Any]] = []
+        packet_results: list[dict[str, Any]] = []
         for model_name, source in self._model_sources.items():
             for packet in self._packets:
                 summary = self._resolve_summary(model_name, source, packet)
@@ -136,17 +156,39 @@ class SummaryEvaluator:
                     if mode == "detailed"
                     else _score_result(judgment)
                 )
-                results.append({
+                packet_results.append({
                     "model": model_name,
                     "packet_id": packet.id,
                     "evaluation": evaluation,
                 })
 
-        return {"mode": mode, "results": results}
+        if mode != "average":
+            return _group_packet_results_by_model(packet_results)
 
-    def evaluate_json(self, mode: str = "default", *, indent: int | None = None) -> str:
+        average_results = _average_results(packet_results)
+        result: dict[str, Any] = {"mode": mode, "results": average_results}
+        if visualize:
+            chart_path = save_average_scores_chart(
+                average_results,
+                output_dir=self._evaluation_dir,
+            )
+            result["visualization_path"] = str(chart_path)
+        return result
+
+    def evaluate_json(
+        self,
+        mode: str = "default",
+        *,
+        visualize: bool = False,
+        indent: int | None = None,
+    ) -> str:
         """Return the evaluation as serialized, standards-compliant JSON."""
-        return json.dumps(self.evaluate(mode), ensure_ascii=False, indent=indent, allow_nan=False)
+        return json.dumps(
+            self.evaluate(mode, visualize=visualize),
+            ensure_ascii=False,
+            indent=indent,
+            allow_nan=False,
+        )
 
     def _resolve_summary(
         self,
@@ -154,12 +196,13 @@ class SummaryEvaluator:
         source: SummaryProvider | None,
         packet: EvidencePacket,
     ) -> str:
+        prompt = build_research_summary_prompt(packet.text, self._summary_mode)
         if callable(source):
-            value = source(packet)
+            value = source(prompt)
         elif source is not None:
             value = source
         elif self._summary_generator is not None:
-            value = self._summary_generator(model_name, packet)
+            value = self._summary_generator(model_name, prompt)
         else:
             raise EvaluationError(
                 f"No summary or summary_generator was supplied for model '{model_name}'."
@@ -331,16 +374,128 @@ def _score_result(judgment: Mapping[str, Any]) -> dict[str, float]:
     key_score = _coverage_score(judgment["key_ideas"])
     contribution_score = _coverage_score(judgment["contributions"])
     hallucinated = len(judgment["hallucinated_claims"])
-    expected = int(judgment["key_ideas"]["expected"]) + int(
-        judgment["contributions"]["expected"]
-    )
-    hallucination_score = hallucinated / (expected + hallucinated) if expected + hallucinated else 0.0
+    total_claims = int(judgment["key_ideas"]["covered"]) + int(judgment["contributions"]["covered"] + int(judgment["key_ideas"]["partial_covered"]) + int(judgment["contributions"]["partial_covered"]))
+    hallucination_score = hallucinated / total_claims if total_claims else 0.0
     return {
-        "avg_score": round((key_score + contribution_score) / 2, 4),
+        "avg_score": round(((key_score + contribution_score) / 2) - hallucination_score, 4),
         "key_ideas_score": round(key_score, 4),
         "contributions_score": round(contribution_score, 4),
         "hallucination_score": round(hallucination_score, 4),
     }
+
+
+def _average_results(packet_results: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    by_model: dict[str, list[Mapping[str, float]]] = {}
+    for item in packet_results:
+        by_model.setdefault(str(item["model"]), []).append(item["evaluation"])
+
+    results: list[dict[str, Any]] = []
+    for model_name, evaluations in by_model.items():
+        averaged = {
+            field: round(
+                sum(float(evaluation[field]) for evaluation in evaluations) / len(evaluations),
+                4,
+            )
+            for field in SCORE_FIELDS
+        }
+        results.append({
+            "model": model_name,
+            "packet_count": len(evaluations),
+            "evaluation": averaged,
+        })
+    return results
+
+
+def _group_packet_results_by_model(
+    packet_results: Sequence[Mapping[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Shape packet-level output as ``{model_id: [evaluations...]}``."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in packet_results:
+        grouped.setdefault(str(item["model"]), []).append({
+            "packet_id": str(item["packet_id"]),
+            "evaluation": item["evaluation"],
+        })
+    return grouped
+
+
+def save_average_scores_chart(
+    average_results: Sequence[Mapping[str, Any]],
+    *,
+    output_dir: str | Path = DEFAULT_EVALUATION_DIR,
+) -> Path:
+    """Save a PNG grouped bar chart comparing average model scores."""
+    if not average_results:
+        raise EvaluationError("Average-score visualization requires at least one model.")
+
+    target_dir = Path(output_dir).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    matplotlib_cache = Path(gettempdir()) / "deepdoc-matplotlib-cache"
+    matplotlib_cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(matplotlib_cache))
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        from matplotlib import pyplot as plt
+    except ImportError as error:
+        raise EvaluationError(
+            "Matplotlib is required to generate evaluation visualizations."
+        ) from error
+
+    labels = {
+        "avg_score": "Overall",
+        "key_ideas_score": "Key ideas",
+        "contributions_score": "Contributions",
+        "hallucination_score": "Hallucination",
+    }
+    colors = ("#2563eb", "#16a34a", "#9333ea", "#dc2626", "#0891b2", "#ca8a04")
+    model_count = len(average_results)
+    x_positions = list(range(len(SCORE_FIELDS)))
+    bar_width = 0.8 / model_count
+    figure, axis = plt.subplots(figsize=(max(8, model_count * 1.5), 5.5))
+    try:
+        for model_index, item in enumerate(average_results):
+            offset = (model_index - (model_count - 1) / 2) * bar_width
+            positions = [position + offset for position in x_positions]
+            values = [
+                max(0.0, min(1.0, float(item["evaluation"][field])))
+                for field in SCORE_FIELDS
+            ]
+            axis.bar(
+                positions,
+                values,
+                width=bar_width,
+                label=str(item["model"]),
+                color=colors[model_index % len(colors)],
+            )
+
+        axis.set_title("Average summary evaluation scores")
+        axis.set_ylabel("Score")
+        axis.set_ylim(0, 1)
+        axis.set_xticks(x_positions, [labels[field] for field in SCORE_FIELDS])
+        axis.grid(axis="y", alpha=0.25)
+        axis.legend(title="Model", loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=2)
+        figure.text(
+            0.99,
+            0.01,
+            "Higher is better except hallucination score",
+            ha="right",
+            fontsize=8,
+            color="#4b5563",
+        )
+        figure.tight_layout(rect=(0, 0.08, 1, 1))
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        chart_path = target_dir / f"model-comparison-{timestamp}-{uuid4().hex[:8]}.png"
+        figure.savefig(chart_path, dpi=160, bbox_inches="tight")
+    except (OSError, ValueError) as error:
+        raise EvaluationError(f"Could not save evaluation visualization: {error}") from error
+    finally:
+        plt.close(figure)
+
+    return chart_path
 
 
 def _detailed_result(judgment: Mapping[str, Any]) -> dict[str, Any]:

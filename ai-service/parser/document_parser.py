@@ -1,8 +1,6 @@
 import re
 from pathlib import Path
 
-from parser.pdf_parser import extract_pdf_title, parse_pdf_pages
-
 
 SUPPORTED_EXTENSIONS = {".pdf", ".md", ".markdown", ".txt", ".docx"}
 
@@ -11,6 +9,8 @@ def parse_document_pages(path: str) -> list[dict]:
     ext = Path(path).suffix.lower()
 
     if ext == ".pdf":
+        from parser.pdf_parser import parse_pdf_pages
+
         return parse_pdf_pages(path)
 
     if ext in {".md", ".markdown"}:
@@ -33,6 +33,8 @@ def extract_document_title(path: str, pages: list[dict] | None = None) -> str:
     ext = Path(path).suffix.lower()
 
     if ext == ".pdf":
+        from parser.pdf_parser import extract_pdf_title
+
         return extract_pdf_title(path, pages)
 
     if ext in {".md", ".markdown"}:
