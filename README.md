@@ -40,9 +40,17 @@ python3 -m venv ai-service/venv
 ai-service/venv/bin/python -m pip install -r requirements.txt
 ```
 
-The default provider is the local Qwen model through Ollama:
+Gemini is the default provider:
 
 ```bash
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key
+```
+
+To use a local Qwen model through Ollama instead:
+
+```bash
+LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen3:8b
 DEEPDOC_OLLAMA_MODELS=qwen3:8b,qwen3:4b
@@ -53,16 +61,9 @@ OLLAMA_KEEP_ALIVE=10m
 OLLAMA_CPU_ONLY=false
 ```
 
-The values above are defaults, so they only need to be added to `ai-service/.env`
-when overriding them. Ollama uses the available accelerator by default. Set
-`OLLAMA_CPU_ONLY=true` only when running a CPU/VPS benchmark. To use Gemini instead:
-
-```bash
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=your_gemini_api_key
-```
-
-Start Ollama before DeepDoc with `ollama serve`. On a lab server, point
+Ollama uses the available accelerator by default. Set `OLLAMA_CPU_ONLY=true`
+only when running a CPU/VPS benchmark. Start Ollama before DeepDoc with
+`ollama serve`. On a lab server, point
 `OLLAMA_BASE_URL` to the Ollama service's private network address. A
 comma-separated `DEEPDOC_OLLAMA_MODELS` value can define selectable models.
 `OLLAMA_MODELS` remains reserved for Ollama's model storage directory.

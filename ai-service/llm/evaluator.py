@@ -248,7 +248,8 @@ Return ONLY valid JSON with exactly this internal assessment shape:
   }},
   "hallucinated_claims": [
     {{"claim": "...", "reason": "...", "evidence": null}}
-  ]
+  ],
+  "total_summary_claims": 0
 }}
 
 Packet id: {packet.id}
@@ -360,6 +361,7 @@ def _normalize_judgment(value: Mapping[str, Any]) -> dict[str, Any]:
         "key_ideas": _normalize_dimension(value.get("key_ideas")),
         "contributions": _normalize_dimension(value.get("contributions")),
         "hallucinated_claims": hallucinations,
+        "total_summary_claims": _nonnegative_int(value.get("total_summary_claims")),
     }
 
 
@@ -374,10 +376,13 @@ def _score_result(judgment: Mapping[str, Any]) -> dict[str, float]:
     key_score = _coverage_score(judgment["key_ideas"])
     contribution_score = _coverage_score(judgment["contributions"])
     hallucinated = len(judgment["hallucinated_claims"])
-    total_claims = int(judgment["key_ideas"]["covered"]) + int(judgment["contributions"]["covered"] + int(judgment["key_ideas"]["partial_covered"]) + int(judgment["contributions"]["partial_covered"]))
-    hallucination_score = hallucinated / total_claims if total_claims else 0.0
+    total_claims = int(judgment["total_summary_claims"])
+    if total_claims == 0 and hallucinated:
+        total_claims = hallucinated
+    hallucination_score = min(1.0, hallucinated / total_claims) if total_claims else 0.0
+    average_score = max(0.0, ((key_score + contribution_score) / 2) - hallucination_score)
     return {
-        "avg_score": round(((key_score + contribution_score) / 2) - hallucination_score, 4),
+        "avg_score": round(average_score, 4),
         "key_ideas_score": round(key_score, 4),
         "contributions_score": round(contribution_score, 4),
         "hallucination_score": round(hallucination_score, 4),

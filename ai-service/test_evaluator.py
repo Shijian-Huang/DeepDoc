@@ -30,6 +30,7 @@ class FakeJudge:
             "hallucinated_claims": [
                 {"claim": "Unsupported claim", "reason": "Not in packet", "evidence": None}
             ],
+            "total_summary_claims": 7,
         }
 
 
@@ -150,6 +151,7 @@ class SummaryEvaluatorTests(unittest.TestCase):
                         "missing": [] if contribution_covered else ["a", "b", "c", "d"],
                     },
                     "hallucinated_claims": hallucinations,
+                    "total_summary_claims": 9 if covered else 1,
                 }
 
         result = SummaryEvaluator(
@@ -169,9 +171,28 @@ class SummaryEvaluatorTests(unittest.TestCase):
                 "avg_score": 0.5,
                 "key_ideas_score": 0.5,
                 "contributions_score": 0.5,
-                "hallucination_score": 0.0,
+                "hallucination_score": 0.5,
             },
         })
+
+    def test_all_hallucinated_claims_are_fully_penalized(self):
+        class HallucinationJudge:
+            def evaluate(inner_self, summary, evidence_packet):
+                return {
+                    "key_ideas": {"covered": 0, "partial_covered": 0, "expected": 1, "missing": ["idea"]},
+                    "contributions": {"covered": 0, "partial_covered": 0, "expected": 1, "missing": ["contribution"]},
+                    "hallucinated_claims": [{"claim": "Unsupported", "reason": "Absent", "evidence": None}],
+                    "total_summary_claims": 1,
+                }
+
+        evaluation = SummaryEvaluator(
+            {"model-a": "Unsupported summary"},
+            [self.packet],
+            judge=HallucinationJudge(),
+        ).evaluate()["model-a"][0]["evaluation"]
+
+        self.assertEqual(evaluation["hallucination_score"], 1.0)
+        self.assertEqual(evaluation["avg_score"], 0.0)
 
     def test_average_mode_saves_visualization_in_evaluation_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -4,9 +4,17 @@ This guide covers the production configuration for DeepDoc: Supabase, Cloudflare
 
 ## Environment Variables
 
-DeepDoc defaults to a local Qwen model served by Ollama:
+DeepDoc defaults to Gemini. Configure it with:
 
 ```bash
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key
+```
+
+To use a local Qwen model served by Ollama instead:
+
+```bash
+LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen3:8b
 DEEPDOC_OLLAMA_MODELS=qwen3:8b,qwen3:4b
@@ -22,8 +30,6 @@ on macOS). Set it to `true` only for a controlled CPU-only benchmark.
 
 `OLLAMA_MODELS` is reserved by Ollama for its model storage directory. On WAVE,
 set it to a project path such as `/WAVE/projects2/DeepDoc/ollama-models`.
-
-To use Gemini instead, set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY`.
 
 For a separate inference server, set `OLLAMA_BASE_URL` to its private network
 address and configure Ollama to listen on that interface. Do not expose an

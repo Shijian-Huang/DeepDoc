@@ -31,7 +31,7 @@ client = (
 )
 
 gemini_models = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite"]
-llm_provider = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+llm_provider = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
 ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 ollama_models = [
     model.strip()
@@ -194,7 +194,10 @@ def llm_options(selected_provider: str | None = None, selected_model: str | None
         {"provider": "ollama", "model": "qwen3:8b", "label": "Qwen3:8B"},
         {"provider": "ollama", "model": "qwen3:4b", "label": "Qwen3:4B"},
         {"provider": "ollama", "model": "qwen3:14b", "label": "Qwen3:14B"},
-        {"provider": "gemini", "model": gemini_models[0], "label": "Gemini"},
+        *[
+            {"provider": "gemini", "model": model, "label": model.replace("gemini-", "Gemini ")}
+            for model in gemini_models
+        ],
     ]
     for choice in choices:
         choice["available"] = (

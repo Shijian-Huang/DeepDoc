@@ -28,7 +28,8 @@ class BuildDefaultPacketsTests(unittest.TestCase):
 
             self.assertEqual(len(packets), 1)
             self.assertEqual(packets[0]["id"], "paper.txt")
-            self.assertIn("## ABSTRACT (pages: 1)", packets[0]["text"])
+            self.assertIn("[SOURCE_ID: abstract_p1_01]", packets[0]["text"])
+            self.assertIn("Section: abstract", packets[0]["text"])
 
     def test_directory_is_sorted_and_ignores_unsupported_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
