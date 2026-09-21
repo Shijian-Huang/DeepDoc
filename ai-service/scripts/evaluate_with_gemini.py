@@ -85,14 +85,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     summarizer.require_gemini_api_key()
 
-    if args.summary_model:
-        # generate_json tries the models in this module-level list in order.
-        summarizer.gemini_models[:] = [args.summary_model]
-
-    summary_label = args.summary_model or "gemini-summarizer"
+    summary_model = args.summary_model or summarizer.gemini_models[0]
+    summary_label = summary_model
 
     def generate_summary(_model_name: str, prompt: str) -> dict[str, Any]:
-        return summarizer.generate_json(prompt)
+        with summarizer.use_llm_selection("gemini", summary_model):
+            return summarizer.generate_json(prompt)
 
     evaluator = SummaryEvaluator(
         models=summary_label,

@@ -4,17 +4,40 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeepDoc</title>
-    <link rel="stylesheet" href="/static/styles.css?v=direct-arxiv-analyze-20260729" />
+    <link rel="stylesheet" href="/static/styles.css?v=analysis-cancel-20260826" />
   </head>
   <body>
     <main class="app-shell">
       <section class="workspace">
         <header class="topbar">
+          <details class="model-switcher home-model-status" data-model-switcher>
+            <summary class="model-status-card" aria-label="Choose AI model" aria-live="polite">
+              <span class="model-status-icon" aria-hidden="true"></span>
+              <span class="model-status-copy">
+                <span class="model-status-label">Model in use</span>
+                <strong data-model-status-name>Loading…</strong>
+                <span data-model-status-connection class="model-status-connection is-loading">Checking connection</span>
+              </span>
+              <span class="model-switcher-chevron" aria-hidden="true">⌄</span>
+            </summary>
+            <div class="model-switcher-menu" data-model-switcher-menu role="menu"></div>
+          </details>
           <div class="brand-lockup">
             <h1 id="brandHomeButton" tabindex="0">DeepDoc</h1>
             <p>Read papers with evidence you can verify.</p>
           </div>
           <div class="topbar-actions">
+            <details class="model-switcher topbar-model-status" data-model-switcher>
+              <summary class="model-status-card" aria-label="Choose AI model" aria-live="polite">
+                <span class="model-status-copy">
+                  <span class="model-status-label">Model in use</span>
+                  <strong data-model-status-name>Loading…</strong>
+                  <span data-model-status-connection class="model-status-connection is-loading">Checking connection</span>
+                </span>
+                <span class="model-switcher-chevron" aria-hidden="true">⌄</span>
+              </summary>
+              <div class="model-switcher-menu" data-model-switcher-menu role="menu"></div>
+            </details>
             <button id="openHistoryButton" class="icon-button" type="button" aria-label="History" title="History">History</button>
             <a class="icon-button" href="https://github.com/Shijian-Huang/DeepDoc" target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub">GitHub</a>
             <div id="authBox" class="auth-box" hidden>
@@ -174,6 +197,16 @@
         <section id="statusPanel" class="status-panel" hidden>
           <div class="spinner"></div>
           <p id="statusText">Analyzing paper...</p>
+          <div id="analysisProgress" class="analysis-progress" hidden>
+            <div class="analysis-progress-track" role="progressbar" aria-label="Estimated analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="analysisProgressBar" class="analysis-progress-bar"></div>
+            </div>
+            <div class="analysis-progress-meta">
+              <span id="analysisProgressStage">Preparing document</span>
+              <span id="analysisProgressTime">Estimated 0% · 0:00</span>
+            </div>
+            <button id="cancelAnalysisButton" class="analysis-cancel-button" type="button">Cancel analysis</button>
+          </div>
         </section>
 
         <section id="resultPanel" class="result-panel empty-state"></section>
@@ -359,6 +392,6 @@
     </template>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="/static/app.js?v=workspace-polish-20260731"></script>
+    <script src="/static/app.js?v=analysis-cancel-20260826"></script>
   </body>
 </html>

@@ -45,11 +45,11 @@ SUMMARY_MODE_MAX_CHARS = {
 
 SECTION_PRIORITY = [
     "abstract",
-    "introduction",
-    "method",
-    "experiment",
     "results",
+    "experiment",
+    "method",
     "conclusion",
+    "introduction",
     "related_work",
 ]
 
@@ -336,6 +336,45 @@ def _fallback_excerpt(text: str, max_chars: int) -> str:
     return f"{cleaned[:head_budget].strip()}\n\n[...]\n\n{cleaned[-tail_budget:].strip()}"
 
 
+def _source_id(section: str, pages: list[int], index: int) -> str:
+    page_label = "_".join(str(page) for page in pages[:3]) or "unknown"
+    return f"{section}_p{page_label}_{index:02d}"
+
+
+def _source_chunks(text: str, max_chars: int = 900) -> list[str]:
+    """Split evidence without cutting a sentence when possible."""
+    cleaned = _clean_section_text(text)
+    if not cleaned:
+        return []
+
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", cleaned) if part.strip()]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        candidates = [paragraph]
+        if len(paragraph) > max_chars:
+            candidates = [
+                sentence.strip()
+                for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", paragraph)
+                if sentence.strip()
+            ]
+        for candidate in candidates:
+            if len(candidate) > max_chars:
+                pieces = [candidate[start:start + max_chars] for start in range(0, len(candidate), max_chars)]
+            else:
+                pieces = [candidate]
+            for piece in pieces:
+                joined = f"{current} {piece}".strip() if current else piece
+                if current and len(joined) > max_chars:
+                    chunks.append(current)
+                    current = piece
+                else:
+                    current = joined
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def build_summary_input(text: str, max_chars: int = 12000) -> tuple[str, list[str]]:
     sections = split_into_sections(text)
     parts: list[str] = []
@@ -388,25 +427,44 @@ def build_summary_input_from_pages(
         if not excerpt:
             continue
 
-        pages_text = ", ".join(str(page) for page in section["pages"])
+        pages = section["pages"]
+        pages_text = ", ".join(str(page) for page in pages)
         selected_sections.append(section_name)
-        parts.append(f"## {section_name.upper()} (pages: {pages_text})\n{excerpt}")
-        evidence_sources.append({
-            "section": section_name,
-            "pages": section["pages"],
-            "excerpt": excerpt[:700],
-        })
+        for index, source_text in enumerate(_source_chunks(excerpt), start=1):
+            source_id = _source_id(section_name, pages, index)
+            source_block = (
+                f"[SOURCE_ID: {source_id}]\n"
+                f"Section: {section_name}\n"
+                f"Pages: {pages_text}\n"
+                f"Text: {source_text}"
+            )
+            if sum(len(part) + 2 for part in parts) + len(source_block) > max_chars:
+                break
+            parts.append(source_block)
+            evidence_sources.append({
+                "source_id": source_id,
+                "section": section_name,
+                "pages": pages,
+                "excerpt": source_text,
+            })
 
     if not parts:
         full_text = "\n".join(page["text"] for page in pages)
         selected_sections = ["fallback_excerpt"]
         fallback = _fallback_excerpt(full_text, max_chars)
-        parts.append(f"## PAPER EXCERPTS\n{fallback}")
-        evidence_sources.append({
-            "section": "fallback_excerpt",
-            "pages": [page["page"] for page in pages],
-            "excerpt": fallback[:700],
-        })
+        fallback_pages = [page["page"] for page in pages]
+        for index, source_text in enumerate(_source_chunks(fallback), start=1):
+            source_id = _source_id("fallback_excerpt", fallback_pages, index)
+            parts.append(
+                f"[SOURCE_ID: {source_id}]\nSection: fallback_excerpt\n"
+                f"Pages: {', '.join(str(page) for page in fallback_pages)}\nText: {source_text}"
+            )
+            evidence_sources.append({
+                "source_id": source_id,
+                "section": "fallback_excerpt",
+                "pages": fallback_pages,
+                "excerpt": source_text,
+            })
 
     packet = "\n\n".join(parts)
-    return packet[:max_chars], selected_sections, evidence_sources
+    return packet, selected_sections, evidence_sources

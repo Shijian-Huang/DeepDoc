@@ -12,6 +12,12 @@ venv/
 
 # Upload files
 uploads/
+*.pdf
+
+# Local model weights and benchmark output
+models/
+*.gguf
+benchmark/results/
 
 # Generated analysis records
 data/

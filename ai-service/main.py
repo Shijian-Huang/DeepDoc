@@ -1,23 +1,33 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Query, Request
 from pydantic import BaseModel
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import html
+import asyncio
 import json
 import re
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 from uuid import uuid4
 
 from llm.summarizer import (
+    AnalysisCancelled,
+    AnalysisCancellationToken,
+    active_llm_model,
+    active_llm_provider,
     generate_video_script,
-    gemini_configuration_error,
-    is_gemini_configured,
+    is_llm_connected,
+    is_llm_configured,
+    llm_configuration_error,
+    llm_options,
     normalize_summary_mode,
+    use_analysis_cancellation,
+    use_llm_selection,
 )
 from parser.document_parser import SUPPORTED_EXTENSIONS as SUPPORTED_DOC_EXTENSIONS
 from parser.pdf_parser import parse_pdf_pages
@@ -63,12 +73,17 @@ from video_generator import (
     generate_video_from_script,
 )
 
-APP_VERSION = "workspace-polish-20260731"
+APP_VERSION = "per-user-model-20260819"
 
 app = FastAPI(
     title="DeepDoc",
     description="AI-powered research paper analysis service.",
 )
+
+
+@app.exception_handler(AnalysisCancelled)
+async def analysis_cancelled_handler(_request: Request, error: AnalysisCancelled):
+    return JSONResponse(status_code=499, content={"detail": str(error)})
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -82,6 +97,9 @@ EXTENSION_CONTENT_TYPES = {
     ".txt": "text/plain",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+ANALYSIS_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+analysis_cancellations: dict[str, AnalysisCancellationToken] = {}
+analysis_cancellations_lock = threading.Lock()
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -95,14 +113,64 @@ class ArxivAnalyzeRequest(BaseModel):
     published: str | None = None
     updated: str | None = None
     categories: list[str] | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class ReanalyzeRequest(BaseModel):
     summary_mode: str = "same"
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class RenameProjectRequest(BaseModel):
     name: str
+
+
+def _normalized_analysis_request_id(value: str | None) -> str:
+    request_id = str(value or "").strip()
+    return request_id if ANALYSIS_REQUEST_ID_RE.fullmatch(request_id) else uuid4().hex
+
+
+def _register_analysis_request(request_id: str) -> AnalysisCancellationToken:
+    token = AnalysisCancellationToken()
+    with analysis_cancellations_lock:
+        previous = analysis_cancellations.get(request_id)
+        analysis_cancellations[request_id] = token
+    if previous is not None:
+        previous.cancel()
+    return token
+
+
+def _release_analysis_request(request_id: str, token: AnalysisCancellationToken) -> None:
+    with analysis_cancellations_lock:
+        if analysis_cancellations.get(request_id) is token:
+            analysis_cancellations.pop(request_id, None)
+
+
+def _run_with_cancellation(token: AnalysisCancellationToken, function, *args, **kwargs):
+    with use_analysis_cancellation(token):
+        return function(*args, **kwargs)
+
+
+async def _run_cancellable_analysis(request_id: str, function, *args, **kwargs):
+    token = _register_analysis_request(request_id)
+    try:
+        return await asyncio.to_thread(_run_with_cancellation, token, function, *args, **kwargs)
+    finally:
+        _release_analysis_request(request_id, token)
+
+
+@app.post("/analysis-requests/{request_id}/cancel")
+async def cancel_analysis_request(request_id: str):
+    if not ANALYSIS_REQUEST_ID_RE.fullmatch(request_id):
+        raise HTTPException(status_code=400, detail="Invalid analysis request ID.")
+    with analysis_cancellations_lock:
+        token = analysis_cancellations.get(request_id)
+    if token is None:
+        return {"request_id": request_id, "cancelled": False, "status": "not_running"}
+    token.cancel()
+    return {"request_id": request_id, "cancelled": True, "status": "cancelling"}
 
 
 def analyze_document_file(
@@ -113,15 +181,26 @@ def analyze_document_file(
     user_id: str | None = None,
     persist: bool = True,
     project_id: str | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
 ) -> dict:
-    _ensure_gemini_configured()
-
     started_at = time.perf_counter()
     submitted_at = datetime.now(timezone.utc)
 
     try:
         normalized_summary_mode = normalize_summary_mode(summary_mode)
-        result = run_pipeline(str(file_path), summary_mode=normalized_summary_mode)
+        with use_llm_selection(llm_provider, llm_model) as (selected_provider, selected_model):
+            if not is_llm_configured():
+                raise RuntimeError(llm_configuration_error())
+            result = run_pipeline(str(file_path), summary_mode=normalized_summary_mode)
+            result["llm_provider"] = selected_provider
+            result["llm_model"] = selected_model
+    except AnalysisCancelled:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {error}") from error
 
@@ -150,9 +229,9 @@ def analyze_document_file(
 analyze_pdf_file = analyze_document_file
 
 
-def _ensure_gemini_configured() -> None:
-    if not is_gemini_configured():
-        raise HTTPException(status_code=503, detail=gemini_configuration_error())
+def _ensure_llm_configured() -> None:
+    if not is_llm_configured():
+        raise HTTPException(status_code=503, detail=llm_configuration_error())
 
 
 def _current_user_id(request: Request, access_token: str | None = None) -> str | None:
@@ -843,14 +922,18 @@ async def read_index():
 
 @app.get("/health")
 async def health_check():
-    gemini_ready = is_gemini_configured()
+    llm_ready = is_llm_configured()
     ffmpeg_ready = shutil.which("ffmpeg") is not None
     tts_health = _tts_health()
     mp4_ready = ffmpeg_ready and bool(tts_health.get("ready"))
     return {
-        "status": "ok" if gemini_ready and mp4_ready else "degraded",
+        "status": "ok" if llm_ready and mp4_ready else "degraded",
         "app_version": APP_VERSION,
-        "gemini_configured": gemini_ready,
+        "llm_provider": active_llm_provider(),
+        "llm_model": active_llm_model(),
+        "llm_configured": llm_ready,
+        "llm_connected": is_llm_connected(),
+        "gemini_configured": llm_ready and active_llm_provider() == "gemini",
         "ffmpeg_available": ffmpeg_ready,
         "tts": tts_health,
         "mp4_ready": mp4_ready,
@@ -859,6 +942,28 @@ async def health_check():
         "r2_storage_enabled": is_r2_storage_enabled(),
         "upload_dir": str(UPLOAD_DIR),
         "static_dir": str(STATIC_DIR),
+    }
+
+
+@app.get("/llm/options")
+async def get_llm_options(
+    provider: str | None = Query(None),
+    model: str | None = Query(None),
+):
+    options = llm_options(provider, model)
+    selected = next((item for item in options if item["selected"]), None)
+    if not selected and options:
+        default_option = next((
+            item for item in options
+            if item["provider"] == active_llm_provider() and item["model"] == active_llm_model()
+        ), options[0])
+        options = llm_options(default_option["provider"], default_option["model"])
+        selected = next((item for item in options if item["selected"]), default_option)
+    return {
+        "provider": selected["provider"] if selected else active_llm_provider(),
+        "model": selected["model"] if selected else active_llm_model(),
+        "connected": bool(selected and selected["available"]),
+        "options": options,
     }
 
 
@@ -873,9 +978,11 @@ async def analyze_pdf(
     request: Request,
     file: UploadFile = File(...),
     summary_mode: str = Form("standard"),
+    llm_provider: str | None = Form(None),
+    llm_model: str | None = Form(None),
     access_token: str | None = Query(None),
+    analysis_request_id: str | None = Header(None, alias="X-Analysis-Request-ID"),
 ):
-    _ensure_gemini_configured()
     user_id = _optional_user_id(request, access_token=access_token)
     should_persist = _should_persist_analysis(user_id)
 
@@ -895,13 +1002,17 @@ async def analyze_pdf(
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        result = analyze_document_file(
+        result = await _run_cancellable_analysis(
+            _normalized_analysis_request_id(analysis_request_id),
+            analyze_document_file,
             file_path,
             filename,
             summary_mode=summary_mode,
             user_id=user_id,
             persist=should_persist,
             project_id=project_id,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
         )
         if not should_persist:
             _remove_file_if_exists(file_path)
@@ -987,6 +1098,9 @@ async def _analyze_project_files(
     summary_mode: str,
     user_id: str,
     project_id: str | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    cancellation_token: AnalysisCancellationToken | None = None,
 ) -> dict:
     pdf_files = [item for item in files if Path(item.filename or "").suffix.lower() in SUPPORTED_DOC_EXTENSIONS]
     if not pdf_files:
@@ -1011,12 +1125,19 @@ async def _analyze_project_files(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(upload.file, buffer)
         try:
-            result = analyze_document_file(
+            if cancellation_token is None:
+                raise RuntimeError("Analysis cancellation token is unavailable.")
+            result = await asyncio.to_thread(
+                _run_with_cancellation,
+                cancellation_token,
+                analyze_document_file,
                 file_path,
                 filename,
                 summary_mode=summary_mode,
                 user_id=user_id,
                 project_id=project_id,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
             )
             papers.append({
                 "analysis_id": result.get("analysis_id"),
@@ -1027,6 +1148,9 @@ async def _analyze_project_files(
                 "position": index,
                 "result": result,
             })
+        except AnalysisCancelled:
+            _remove_file_if_exists(file_path)
+            raise
         except Exception as error:
             _remove_file_if_exists(file_path)
             failed_record = save_failed_analysis(
@@ -1060,11 +1184,21 @@ async def analyze_project_pdfs(
     request: Request,
     files: list[UploadFile] = File(...),
     summary_mode: str = Form("standard"),
+    llm_provider: str | None = Form(None),
+    llm_model: str | None = Form(None),
     access_token: str | None = Query(None),
+    analysis_request_id: str | None = Header(None, alias="X-Analysis-Request-ID"),
 ):
-    _ensure_gemini_configured()
     user_id = _current_user_id(request, access_token=access_token)
-    return await _analyze_project_files(files, summary_mode=summary_mode, user_id=user_id)
+    request_id = _normalized_analysis_request_id(analysis_request_id)
+    token = _register_analysis_request(request_id)
+    try:
+        return await _analyze_project_files(
+            files, summary_mode=summary_mode, user_id=user_id,
+            llm_provider=llm_provider, llm_model=llm_model, cancellation_token=token,
+        )
+    finally:
+        _release_analysis_request(request_id, token)
 
 
 @app.post("/projects/{project_id}/papers")
@@ -1073,11 +1207,21 @@ async def add_project_papers(
     project_id: str,
     files: list[UploadFile] = File(...),
     summary_mode: str = Form("standard"),
+    llm_provider: str | None = Form(None),
+    llm_model: str | None = Form(None),
     access_token: str | None = Query(None),
+    analysis_request_id: str | None = Header(None, alias="X-Analysis-Request-ID"),
 ):
-    _ensure_gemini_configured()
     user_id = _current_user_id(request, access_token=access_token)
-    return await _analyze_project_files(files, summary_mode=summary_mode, user_id=user_id, project_id=project_id)
+    request_id = _normalized_analysis_request_id(analysis_request_id)
+    token = _register_analysis_request(request_id)
+    try:
+        return await _analyze_project_files(
+            files, summary_mode=summary_mode, user_id=user_id, project_id=project_id,
+            llm_provider=llm_provider, llm_model=llm_model, cancellation_token=token,
+        )
+    finally:
+        _release_analysis_request(request_id, token)
 
 
 @app.post("/arxiv/analyze")
@@ -1085,8 +1229,8 @@ async def analyze_arxiv_paper(
     request: ArxivAnalyzeRequest,
     http_request: Request,
     access_token: str | None = Query(None),
+    analysis_request_id: str | None = Header(None, alias="X-Analysis-Request-ID"),
 ):
-    _ensure_gemini_configured()
     user_id = _optional_user_id(http_request, access_token=access_token)
     should_persist = _should_persist_analysis(user_id)
 
@@ -1113,13 +1257,17 @@ async def analyze_arxiv_paper(
         raise HTTPException(status_code=error.status_code, detail=str(error)) from error
 
     try:
-        result = analyze_document_file(
+        result = await _run_cancellable_analysis(
+            _normalized_analysis_request_id(analysis_request_id),
+            analyze_document_file,
             pdf_path,
             f"arxiv-{request.arxiv_id}.pdf",
             summary_mode=request.summary_mode,
             user_id=user_id,
             persist=should_persist,
             project_id=project_id,
+            llm_provider=request.llm_provider,
+            llm_model=request.llm_model,
             source_metadata={
                 "source": "arxiv",
                 "arxiv_id": request.arxiv_id,
@@ -1135,6 +1283,9 @@ async def analyze_arxiv_paper(
         if not should_persist:
             _remove_file_if_exists(pdf_path)
         return result
+    except AnalysisCancelled:
+        _remove_file_if_exists(pdf_path)
+        raise HTTPException(status_code=499, detail="Analysis cancelled by user.")
     except HTTPException:
         _remove_file_if_exists(pdf_path)
         raise
@@ -1156,6 +1307,7 @@ async def reanalyze_existing_pdf(
     summary_mode: str = Query("same", max_length=24),
     reanalyze_request: ReanalyzeRequest | None = None,
     access_token: str | None = Query(None),
+    analysis_request_id: str | None = Header(None, alias="X-Analysis-Request-ID"),
 ):
     user_id = _current_user_id(request, access_token=access_token)
     record = get_analysis(analysis_id, user_id=user_id)
@@ -1174,14 +1326,21 @@ async def reanalyze_existing_pdf(
         if requested_summary_mode in {"", "same"}
         else normalize_summary_mode(requested_summary_mode)
     )
-    return analyze_document_file(
-        pdf_path,
-        Path(record.get("filename") or pdf_path.name).name,
-        summary_mode=selected_summary_mode,
-        user_id=user_id,
-        project_id=record.get("project_id"),
-        source_metadata=result.get("source_metadata") if isinstance(result.get("source_metadata"), dict) else None,
-    )
+    try:
+        return await _run_cancellable_analysis(
+            _normalized_analysis_request_id(analysis_request_id),
+            analyze_document_file,
+            pdf_path,
+            Path(record.get("filename") or pdf_path.name).name,
+            summary_mode=selected_summary_mode,
+            user_id=user_id,
+            project_id=record.get("project_id"),
+            source_metadata=result.get("source_metadata") if isinstance(result.get("source_metadata"), dict) else None,
+            llm_provider=reanalyze_request.llm_provider if reanalyze_request else result.get("llm_provider"),
+            llm_model=reanalyze_request.llm_model if reanalyze_request else result.get("llm_model"),
+        )
+    except AnalysisCancelled as error:
+        raise HTTPException(status_code=499, detail=str(error)) from error
 
 
 @app.post("/analyses/{analysis_id}/video-script")
@@ -1195,8 +1354,8 @@ async def create_video_script(
     record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    if not is_gemini_configured():
-        raise HTTPException(status_code=503, detail=gemini_configuration_error())
+    if not is_llm_configured():
+        raise HTTPException(status_code=503, detail=llm_configuration_error())
 
     result = record.get("result", {})
     video_script = generate_video_script(result, slide_count=slide_count)

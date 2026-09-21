@@ -4,11 +4,30 @@ This guide covers the production configuration for DeepDoc: Supabase, Cloudflare
 
 ## Environment Variables
 
-Required:
+DeepDoc defaults to a local Qwen model served by Ollama:
 
 ```bash
-GEMINI_API_KEY=your_gemini_api_key
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen3:8b
+DEEPDOC_OLLAMA_MODELS=qwen3:8b,qwen3:4b
+OLLAMA_CONTEXT_LENGTH=12288
+OLLAMA_NUM_PREDICT=3072
+OLLAMA_THINK=false
+OLLAMA_KEEP_ALIVE=10m
+OLLAMA_CPU_ONLY=false
 ```
+
+`OLLAMA_CPU_ONLY=false` allows Ollama to use an available GPU (including Metal
+on macOS). Set it to `true` only for a controlled CPU-only benchmark.
+
+`OLLAMA_MODELS` is reserved by Ollama for its model storage directory. On WAVE,
+set it to a project path such as `/WAVE/projects2/DeepDoc/ollama-models`.
+
+To use Gemini instead, set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY`.
+
+For a separate inference server, set `OLLAMA_BASE_URL` to its private network
+address and configure Ollama to listen on that interface. Do not expose an
+unauthenticated Ollama endpoint directly to the public internet.
 
 Supabase Auth + Postgres:
 
@@ -117,7 +136,7 @@ MP4 generation is optional. Summary, evidence, references, PDF reading, and slid
 
 Before deploying:
 
-- Set `GEMINI_API_KEY`.
+- Set `GEMINI_API_KEY`, or configure `LLM_PROVIDER=ollama` and start Ollama.
 - If using login/history, set Supabase URL and keys.
 - Run `supabase/schema.sql` in Supabase.
 - If using persistent source PDFs, set R2 variables.
@@ -127,7 +146,7 @@ Before deploying:
 After deploying:
 
 - Check `/health`.
-- Confirm `gemini_configured: true`.
+- Confirm `llm_configured: true` and that `llm_provider` is correct.
 - Confirm `storage_backend`, `supabase_auth_enabled`, and `r2_storage_enabled` match the intended setup.
 - If MP4 is enabled, confirm `mp4_ready: true`.
 
