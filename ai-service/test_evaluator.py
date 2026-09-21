@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from llm.evaluator import EvidencePacket, EvaluationError, SummaryEvaluator
+from llm.evaluator import EvidencePacket, EvaluationError, SummaryEvaluator, _extract_json
 from utils.summary_prompt import build_research_summary_prompt
 
 
@@ -37,6 +37,12 @@ class FakeJudge:
 class SummaryEvaluatorTests(unittest.TestCase):
     def setUp(self):
         self.packet = EvidencePacket("paper-section", "Ground-truth paper excerpt.")
+
+    def test_extract_json_ignores_trailing_model_output(self):
+        self.assertEqual(
+            json.loads(_extract_json('{"status": "ok"}\n{"extra": true}')),
+            {"status": "ok"},
+        )
 
     def test_default_mode_calculates_scores_for_each_model_and_packet(self):
         evaluator = SummaryEvaluator(

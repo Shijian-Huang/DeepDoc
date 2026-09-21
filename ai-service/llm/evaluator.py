@@ -311,8 +311,16 @@ def _summary_text(value: SummaryValue) -> str:
 
 def _extract_json(raw_text: str) -> str:
     cleaned = raw_text.replace("```json", "").replace("```", "").strip()
-    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-    return match.group(0) if match else cleaned
+    object_start = cleaned.find("{")
+    if object_start < 0:
+        return cleaned
+    candidate = cleaned[object_start:]
+    try:
+        _, end = json.JSONDecoder().raw_decode(candidate)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        return match.group(0) if match else cleaned
+    return candidate[:end]
 
 
 def _nonnegative_int(value: Any) -> int:
