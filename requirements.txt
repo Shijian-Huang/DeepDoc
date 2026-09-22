@@ -1,6 +1,7 @@
 fastapi==0.136.1
 boto3==1.40.67
 google-genai==1.74.0
+matplotlib==3.10.9
 pillow==12.2.0
 piper-tts==1.4.2
 PyMuPDF==1.27.2.3

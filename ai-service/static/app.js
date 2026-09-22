@@ -11,9 +11,19 @@ const clearUploadButton = document.querySelector("#clearUploadButton");
 const analyzeButton = document.querySelector("#analyzeButton");
 const statusPanel = document.querySelector("#statusPanel");
 const statusText = document.querySelector("#statusText");
+const analysisProgress = document.querySelector("#analysisProgress");
+const analysisProgressTrack = analysisProgress?.querySelector('[role="progressbar"]');
+const analysisProgressBar = document.querySelector("#analysisProgressBar");
+const analysisProgressStage = document.querySelector("#analysisProgressStage");
+const analysisProgressTime = document.querySelector("#analysisProgressTime");
+const cancelAnalysisButton = document.querySelector("#cancelAnalysisButton");
 const resultPanel = document.querySelector("#resultPanel");
 const resultTemplate = document.querySelector("#resultTemplate");
 const brandHomeButton = document.querySelector("#brandHomeButton");
+const modelStatusNames = document.querySelectorAll("[data-model-status-name]");
+const modelStatusConnections = document.querySelectorAll("[data-model-status-connection]");
+const modelSwitchers = document.querySelectorAll("[data-model-switcher]");
+const modelSwitcherMenus = document.querySelectorAll("[data-model-switcher-menu]");
 const historyPanel = document.querySelector("#historyPanel");
 const openHistoryButton = document.querySelector("#openHistoryButton");
 const closeHistoryButton = document.querySelector("#closeHistoryButton");
@@ -76,6 +86,7 @@ const ANONYMOUS_PDF_DB_NAME = "deepdoc.anonymousPdfs";
 const ANONYMOUS_PDF_STORE = "pdfs";
 const ANONYMOUS_HISTORY_LIMIT = 50;
 const MAX_UPLOAD_FILES = 10;
+const MODEL_PREFERENCE_KEY = "deepdoc.llmPreference.v2";
 
 let historyItems = [];
 let arxivItems = [];
@@ -90,7 +101,14 @@ let authState = {
   session: null,
 };
 let activeLocalPdfUrl = "";
+let activeLocalDownloadUrls = [];
 let uploadFiles = [];
+let selectedLlm = readModelPreference();
+let analysisProgressTimer = null;
+let analysisProgressStartedAt = 0;
+let activeAnalysisRequestId = "";
+let activeAnalysisController = null;
+let analysisCancellationRequested = false;
 let arxivSearchState = {
   query: "",
   searchField: "all",
@@ -105,6 +123,103 @@ let arxivSearchState = {
 };
 
 initAuth();
+loadModelStatus();
+
+async function loadModelStatus() {
+  try {
+    const params = new URLSearchParams();
+    if (selectedLlm?.provider) params.set("provider", selectedLlm.provider);
+    if (selectedLlm?.model) params.set("model", selectedLlm.model);
+    const response = await fetch(`/llm/options?${params.toString()}`, {cache: "no-store"});
+    if (!response.ok) throw new Error(`Model check failed with status ${response.status}`);
+    const health = await response.json();
+    const provider = String(health.provider || "").toLowerCase();
+    const model = String(health.model || provider || "Unknown model");
+    selectedLlm = {provider, model};
+    saveModelPreference(selectedLlm);
+    setModelStatusNames(formatModelName(model, provider));
+    setModelConnectionState(health.connected ? "Connected" : "Unavailable", !health.connected);
+    renderModelOptions(health.options || []);
+  } catch (_error) {
+    setModelStatusNames("Model unavailable");
+    setModelConnectionState("Backend offline", true);
+  }
+}
+
+function readModelPreference() {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(modelPreferenceStorageKey()) || "null");
+    return value?.provider && value?.model ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveModelPreference(selection) {
+  window.localStorage.setItem(modelPreferenceStorageKey(), JSON.stringify(selection));
+}
+
+function modelPreferenceStorageKey() {
+  const userId = authState?.session?.user?.id || "anonymous";
+  return `${MODEL_PREFERENCE_KEY}.${userId}`;
+}
+
+function reloadUserModelPreference() {
+  selectedLlm = readModelPreference();
+  loadModelStatus();
+}
+
+function renderModelOptions(options) {
+  modelSwitcherMenus.forEach((menu) => {
+    menu.innerHTML = options.map((option) => `
+      <button type="button" role="menuitemradio" aria-checked="${option.selected ? "true" : "false"}"
+        data-model-provider="${escapeAttribute(option.provider)}" data-model-name="${escapeAttribute(option.model)}"
+      >
+        <span class="model-option-check">${option.selected ? "✓" : ""}</span>
+        <span>${escapeHtml(option.label)}</span>
+      </button>
+    `).join("");
+  });
+}
+
+modelSwitcherMenus.forEach((menu) => menu.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-model-provider]");
+  if (!button || button.disabled) return;
+  selectedLlm = {provider: button.dataset.modelProvider, model: button.dataset.modelName};
+  saveModelPreference(selectedLlm);
+  modelSwitchers.forEach((switcher) => { switcher.open = false; });
+  await loadModelStatus();
+}));
+
+function appendSelectedLlm(formData) {
+  if (!selectedLlm) return;
+  formData.append("llm_provider", selectedLlm.provider);
+  formData.append("llm_model", selectedLlm.model);
+}
+
+function setModelStatusNames(name) {
+  modelStatusNames.forEach((element) => {
+    element.textContent = name;
+  });
+}
+
+function setModelConnectionState(label, offline) {
+  modelStatusConnections.forEach((element) => {
+    element.textContent = label;
+    element.classList.remove("is-loading", "is-offline");
+    if (offline) element.classList.add("is-offline");
+  });
+}
+
+function formatModelName(model, provider) {
+  if (provider === "ollama") {
+    return model.replace(/^qwen/i, "Qwen").replace(/:(\d+)b$/i, ":$1B");
+  }
+  if (provider === "gemini") {
+    return model.replace(/^gemini/i, "Gemini");
+  }
+  return model;
+}
 
 const SUPPORTED_EXTENSIONS = new Set([".pdf", ".md", ".markdown", ".txt", ".docx"]);
 const SUPPORTED_MIME_TYPES = new Set([
@@ -210,8 +325,9 @@ async function analyzeUploadFile(file, summaryMode) {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("summary_mode", summaryMode);
+  appendSelectedLlm(formData);
 
-  const response = await apiFetch("/analyze-pdf", {
+  const response = await analysisFetch("/analyze-pdf", {
     method: "POST",
     body: formData,
   });
@@ -227,11 +343,12 @@ async function analyzeProjectUploadFiles(files, summaryMode, projectId = "") {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file, uploadDisplayName(file)));
   formData.append("summary_mode", summaryMode);
+  appendSelectedLlm(formData);
 
   const endpoint = projectId
     ? `/projects/${encodeURIComponent(projectId)}/papers`
     : "/projects/analyze-pdfs";
-  const response = await apiFetch(endpoint, {
+  const response = await analysisFetch(endpoint, {
     method: "POST",
     body: formData,
   });
@@ -405,6 +522,7 @@ uploadForm.addEventListener("submit", async (event) => {
         result.analysis_id = result.analysis_id || `local-${window.crypto?.randomUUID?.() || `${Date.now()}-${index}`}`;
         successes.push({ file, result, displayName });
       } catch (error) {
+        if (isAnalysisCancellation(error)) throw error;
         failures.push({ file, displayName, message: error.message || "Analysis failed." });
       }
     }
@@ -429,7 +547,9 @@ uploadForm.addEventListener("submit", async (event) => {
     renderUploadBatchStatus(successes, failures);
     await loadHistory();
   } catch (error) {
-    renderError(error.message || "Analysis failed.");
+    if (!isAnalysisCancellation(error)) {
+      renderError(error.message || "Analysis failed.");
+    }
   } finally {
     setBusy(false);
   }
@@ -468,6 +588,7 @@ startArxivPlaceholderRotation();
 document.addEventListener("click", closeDownloadMenusOnOutsideClick);
 document.addEventListener("click", closeProjectMenusOnOutsideClick);
 document.addEventListener("click", closeAccountMenuOnOutsideClick);
+document.addEventListener("click", closeModelSwitchersOnOutsideClick);
 document.addEventListener("keydown", handleAuthModalKeydown);
 
 
@@ -494,10 +615,12 @@ async function initAuth() {
     authState.session = data?.session || null;
     authState.ready = true;
     renderAuthState();
+    reloadUserModelPreference();
     restoreProjectFromUrl();
     authState.client.auth.onAuthStateChange((_event, session) => {
       authState.session = session;
       renderAuthState();
+      reloadUserModelPreference();
       loadHistory();
       restoreProjectFromUrl();
     });
@@ -858,6 +981,62 @@ async function apiFetch(url, options = {}) {
   });
 }
 
+function beginAnalysisRequest() {
+  if (activeAnalysisController) return;
+  activeAnalysisRequestId = window.crypto?.randomUUID?.() || `analysis-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  activeAnalysisController = new AbortController();
+  analysisCancellationRequested = false;
+  if (cancelAnalysisButton) {
+    cancelAnalysisButton.disabled = false;
+    cancelAnalysisButton.textContent = "Cancel analysis";
+  }
+}
+
+function finishAnalysisRequest() {
+  activeAnalysisRequestId = "";
+  activeAnalysisController = null;
+  if (cancelAnalysisButton) {
+    cancelAnalysisButton.disabled = false;
+    cancelAnalysisButton.textContent = "Cancel analysis";
+  }
+}
+
+function analysisFetch(url, options = {}) {
+  beginAnalysisRequest();
+  return apiFetch(url, {
+    ...options,
+    signal: activeAnalysisController?.signal,
+    headers: {
+      ...(options.headers || {}),
+      "X-Analysis-Request-ID": activeAnalysisRequestId,
+    },
+  });
+}
+
+function isAnalysisCancellation(error) {
+  return analysisCancellationRequested || error?.name === "AbortError";
+}
+
+async function cancelCurrentAnalysis() {
+  if (!activeAnalysisController || !activeAnalysisRequestId || analysisCancellationRequested) return;
+  const requestId = activeAnalysisRequestId;
+  const controller = activeAnalysisController;
+  analysisCancellationRequested = true;
+  if (cancelAnalysisButton) {
+    cancelAnalysisButton.disabled = true;
+    cancelAnalysisButton.textContent = "Cancelling...";
+  }
+  statusText.textContent = "Cancelling analysis...";
+  const cancelRequest = apiFetch(`/analysis-requests/${encodeURIComponent(requestId)}/cancel`, {
+    method: "POST",
+  }).catch(() => null);
+  controller.abort();
+  await cancelRequest;
+  setBusy(false);
+}
+
+cancelAnalysisButton?.addEventListener("click", cancelCurrentAnalysis);
+
 function renderAuthState() {
   if (!authState.enabled) return;
   const email = authState.session?.user?.email || "";
@@ -1017,6 +1196,13 @@ function closeDownloadMenusOnOutsideClick(event) {
   });
 }
 
+function closeModelSwitchersOnOutsideClick(event) {
+  const activeSwitcher = event.target.closest("[data-model-switcher]");
+  modelSwitchers.forEach((switcher) => {
+    if (switcher !== activeSwitcher) switcher.open = false;
+  });
+}
+
 function closeProjectMenusOnOutsideClick(event) {
   const activeProjectMenu = event.target.closest(".project-more-menu");
   resultPanel.querySelectorAll(".project-more-menu[open]").forEach((menu) => {
@@ -1037,6 +1223,7 @@ function returnHome() {
   document.body.classList.remove("has-result");
   document.body.classList.remove("source-collapsed");
   document.body.classList.remove("is-busy");
+  stopAnalysisProgress();
   resultPanel.className = "result-panel empty-state";
   resultPanel.dataset.analysisId = "";
   resultPanel.innerHTML = "";
@@ -1316,7 +1503,7 @@ async function analyzeArxivItem(item, summaryMode, button = null) {
   }
 
   try {
-    const response = await apiFetch("/arxiv/analyze", {
+    const response = await analysisFetch("/arxiv/analyze", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
@@ -1328,6 +1515,8 @@ async function analyzeArxivItem(item, summaryMode, button = null) {
         published: item.published || "",
         updated: item.updated || "",
         categories: Array.isArray(item.categories) ? item.categories : [],
+        llm_provider: selectedLlm?.provider || null,
+        llm_model: selectedLlm?.model || null,
       }),
     });
     const payload = await response.json();
@@ -1358,7 +1547,9 @@ async function analyzeArxivItem(item, summaryMode, button = null) {
     }
     await loadHistory();
   } catch (error) {
-    renderError(error.message || "arXiv analysis failed.");
+    if (!isAnalysisCancellation(error)) {
+      renderError(error.message || "arXiv analysis failed.");
+    }
   } finally {
     if (button) {
       button.disabled = false;
@@ -1700,10 +1891,14 @@ async function reanalyzeExistingAnalysis(analysisId, button, summaryMode = "stan
 
   try {
     const params = new URLSearchParams({summary_mode: summaryMode || "standard"});
-    const response = await apiFetch(`/analyses/${encodeURIComponent(analysisId)}/reanalyze?${params.toString()}`, {
+    const response = await analysisFetch(`/analyses/${encodeURIComponent(analysisId)}/reanalyze?${params.toString()}`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({summary_mode: summaryMode || "standard"}),
+      body: JSON.stringify({
+        summary_mode: summaryMode || "standard",
+        llm_provider: selectedLlm?.provider || null,
+        llm_model: selectedLlm?.model || null,
+      }),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -1722,7 +1917,9 @@ async function reanalyzeExistingAnalysis(analysisId, button, summaryMode = "stan
     }
     await loadHistory();
   } catch (error) {
-    renderError(error.message || "Reanalysis failed.");
+    if (!isAnalysisCancellation(error)) {
+      renderError(error.message || "Reanalysis failed.");
+    }
   } finally {
     button.disabled = false;
     button.textContent = originalButtonText || "Reanalyze";
@@ -1762,10 +1959,69 @@ function setBusy(isBusy, message = "") {
   analyzeButton.classList.toggle("is-loading", isBusy);
   analyzeButton.setAttribute("aria-busy", String(isBusy));
   if (!isBusy) {
+    stopAnalysisProgress();
+    finishAnalysisRequest();
     renderUploadState();
+  } else if (isAnalysisOperation(message)) {
+    beginAnalysisRequest();
+    startAnalysisProgress();
+  } else {
+    stopAnalysisProgress();
   }
   statusText.textContent = message;
   statusPanel.hidden = !isBusy;
+}
+
+function isAnalysisOperation(message) {
+  return /analyz|creating a new .*version/i.test(String(message || ""));
+}
+
+function startAnalysisProgress() {
+  stopAnalysisProgress();
+  analysisProgressStartedAt = Date.now();
+  if (analysisProgress) analysisProgress.hidden = false;
+  updateAnalysisProgress();
+  analysisProgressTimer = window.setInterval(updateAnalysisProgress, 500);
+}
+
+function stopAnalysisProgress() {
+  if (analysisProgressTimer !== null) {
+    window.clearInterval(analysisProgressTimer);
+    analysisProgressTimer = null;
+  }
+  analysisProgressStartedAt = 0;
+  if (analysisProgress) analysisProgress.hidden = true;
+  if (analysisProgressBar) analysisProgressBar.style.width = "0%";
+  analysisProgressTrack?.setAttribute("aria-valuenow", "0");
+}
+
+function updateAnalysisProgress() {
+  if (!analysisProgressStartedAt) return;
+  const elapsed = Math.max(0, (Date.now() - analysisProgressStartedAt) / 1000);
+  let progress = 0;
+  let stage = "Preparing document";
+  if (elapsed < 5) {
+    progress = 4 + (elapsed / 5) * 8;
+  } else if (elapsed < 65) {
+    progress = 12 + ((elapsed - 5) / 60) * 35;
+    stage = "Extracting and verifying facts";
+  } else if (elapsed < 150) {
+    progress = 47 + ((elapsed - 65) / 85) * 34;
+    stage = "Generating grounded analysis";
+  } else {
+    progress = 81 + 15 * (1 - Math.exp(-(elapsed - 150) / 120));
+    stage = "Validating evidence and citations";
+  }
+  const roundedProgress = Math.min(96, Math.round(progress));
+  const elapsedSeconds = Math.floor(elapsed);
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = String(elapsedSeconds % 60).padStart(2, "0");
+  if (analysisProgressBar) analysisProgressBar.style.width = `${roundedProgress}%`;
+  if (analysisProgressStage) analysisProgressStage.textContent = stage;
+  if (analysisProgressTime) {
+    analysisProgressTime.textContent = `Estimated ${roundedProgress}% · ${minutes}:${seconds}`;
+  }
+  analysisProgressTrack?.setAttribute("aria-valuenow", String(roundedProgress));
 }
 
 function renderError(message) {
@@ -1773,6 +2029,7 @@ function renderError(message) {
   document.body.classList.remove("has-result");
   document.body.classList.remove("source-collapsed");
   document.body.classList.remove("is-busy");
+  stopAnalysisProgress();
   resultPanel.className = "result-panel error";
   resultPanel.innerHTML = `
     <div>
@@ -1912,6 +2169,12 @@ function createProjectNavigator(project, activeAnalysisId) {
   const updatedAt = project.updated_at || project.created_at || "";
   const projectName = project.name || "Untitled Project";
   const activePaperTitle = paperTitleFromProjectPaper(activePaper);
+  const processingSeconds = Number(
+    activePaper.record?.result?.processing_seconds ?? activePaper.result?.processing_seconds,
+  );
+  const analysisTime = Number.isFinite(processingSeconds) && processingSeconds >= 0
+    ? `<span>Analyzed in ${escapeHtml(processingSeconds.toFixed(2))}s</span>`
+    : "";
   const wrapper = document.createElement("section");
   wrapper.className = `project-nav ${papers.length <= 1 ? "single-paper" : ""}`;
   wrapper.innerHTML = `
@@ -1925,6 +2188,7 @@ function createProjectNavigator(project, activeAnalysisId) {
         <div class="project-status-summary">
           <span>${escapeHtml(String(papers.length))} paper${papers.length === 1 ? "" : "s"}</span>
           <span>Updated ${escapeHtml(formatDate(updatedAt))}</span>
+          ${analysisTime}
         </div>
       </div>
       <div class="project-active-title" title="${escapeAttribute(activePaperTitle)}">${escapeHtml(activePaperTitle)}</div>
@@ -1998,6 +2262,100 @@ function formatPaperStatus(status) {
   if (normalized === "failed") return "Failed";
   if (normalized === "analyzing") return "Analyzing";
   return "Processing";
+}
+
+function releaseLocalAnalysisDownloads() {
+  activeLocalDownloadUrls.forEach((url) => URL.revokeObjectURL(url));
+  activeLocalDownloadUrls = [];
+}
+
+function configureLocalAnalysisDownloads({download, downloadMarkdown, result, filename, analysisId, projectId}) {
+  const stem = downloadFilenameStem(result, filename);
+  const record = {
+    analysis_id: analysisId || "",
+    project_id: projectId || "",
+    filename,
+    created_at: result.generated_at || result.submitted_at || new Date().toISOString(),
+    status: "completed",
+    result,
+  };
+  setBlobDownload(download, JSON.stringify(record, null, 2), "application/json;charset=utf-8", `${stem}-analysis.json`);
+  setBlobDownload(
+    downloadMarkdown,
+    buildLocalAnalysisMarkdown(result, filename),
+    "text/markdown;charset=utf-8",
+    `${stem}-analysis.md`,
+  );
+}
+
+function setBlobDownload(link, content, type, filename) {
+  const url = URL.createObjectURL(new Blob([content], {type}));
+  activeLocalDownloadUrls.push(url);
+  link.href = url;
+  link.download = filename;
+}
+
+function downloadFilenameStem(result, fallbackFilename) {
+  const title = paperTitleFromResult(result, fallbackFilename).replace(/\.[^.]+$/, "");
+  const safe = title
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 90);
+  return safe || "deepdoc";
+}
+
+function buildLocalAnalysisMarkdown(result, fallbackFilename) {
+  const summary = result.document_summary || {};
+  const title = paperTitleFromResult(result, fallbackFilename);
+  const lines = [
+    `# ${title}`,
+    "",
+    `- Summary mode: ${formatMode(result.summary_mode)}`,
+    `- Generated: ${result.generated_at || result.submitted_at || "Unavailable"}`,
+    "",
+    "## Overview",
+    "",
+    summary.summary || "No summary returned.",
+    "",
+  ];
+  appendMarkdownList(lines, "Key Ideas", summary.key_ideas);
+  appendMarkdownList(lines, "Contributions", summary.contributions);
+  appendMarkdownEvidence(lines, summary.evidence);
+  appendMarkdownList(lines, "References", result.references);
+  return `${lines.join("\n").trim()}\n`;
+}
+
+function appendMarkdownList(lines, heading, items) {
+  lines.push(`## ${heading}`, "");
+  const values = Array.isArray(items) ? items : [];
+  if (!values.length) {
+    lines.push("None.", "");
+    return;
+  }
+  values.forEach((item) => {
+    const text = typeof item === "object"
+      ? (item.text || item.title || item.claim || JSON.stringify(item))
+      : item;
+    lines.push(`- ${String(text || "").trim()}`);
+  });
+  lines.push("");
+}
+
+function appendMarkdownEvidence(lines, items) {
+  lines.push("## Evidence", "");
+  const values = Array.isArray(items) ? items : [];
+  if (!values.length) {
+    lines.push("None.", "");
+    return;
+  }
+  values.forEach((item) => {
+    const claim = item?.claim || item?.summary || item?.text || "";
+    const pages = Array.isArray(item?.pages) && item.pages.length ? `, pages ${item.pages.join(", ")}` : "";
+    const source = item?.section ? ` (${item.section}${pages})` : (pages ? ` (${pages.slice(2)})` : "");
+    lines.push(`- ${String(claim).trim()}${source}`);
+  });
+  lines.push("");
 }
 
 function paperStatusBadge(paper) {
@@ -2081,7 +2439,17 @@ function renderResult(result, fallbackFilename = "Analysis Result", options = {}
   const downloadVideoLink = resultPanel.querySelector('[data-field="downloadVideo"]');
   const modeBadge = resultPanel.querySelector('[data-field="analysisModeBadge"]');
   if (modeBadge) modeBadge.textContent = formatAnalysisModeBadge(result.summary_mode);
-  if (analysisId && download && downloadMarkdown) {
+  releaseLocalAnalysisDownloads();
+  if (workspaceProject.local && download && downloadMarkdown) {
+    configureLocalAnalysisDownloads({
+      download,
+      downloadMarkdown,
+      result,
+      filename: fallbackFilename,
+      analysisId,
+      projectId: workspaceProject.project_id,
+    });
+  } else if (analysisId && download && downloadMarkdown) {
     download.href = withAccessToken(`/analyses/${analysisId}/download`);
     downloadMarkdown.href = withAccessToken(`/analyses/${analysisId}/markdown/download`);
     downloadMarkdown.download = "";
@@ -2894,19 +3262,35 @@ function renderHistory(items) {
     const paperCount = Number(item.paper_count || item.papers?.length || 1);
     const completedCount = Number(item.completed_count || 0);
     const failedCount = Number(item.failed_count || 0);
-    const statusSummary = `${paperCount} paper${paperCount === 1 ? "" : "s"} · ${completedCount} completed${failedCount ? ` · ${failedCount} failed` : ""}`;
-    const downloadAction = item.local
-      ? '<span class="result-meta">Browser only</span>'
-      : "";
+    const statusLabel = failedCount ? `${completedCount} completed · ${failedCount} failed` : "Completed";
+    const statusClass = failedCount ? "has-failures" : "is-complete";
+    const storageBadge = item.local
+      ? '<span class="history-storage-badge">◎ <span>Browser only</span></span>'
+      : '<span class="history-storage-badge is-cloud">☁ <span>Cloud saved</span></span>';
+    const iconClass = paperCount > 1 ? "is-project" : "is-paper";
     card.innerHTML = `
-      <strong>${escapeHtml(displayTitle)}</strong>
-      <p class="result-meta">${escapeHtml(statusSummary)} · ${escapeHtml(formatDate(item.updated_at || item.created_at))}</p>
-      <p>${escapeHtml(trimText(item.summary || "", 145))}</p>
-      <div class="history-actions">
-        <button type="button" data-open="${escapeHtml(itemId || "")}">Open</button>
-        ${downloadAction}
-        <button type="button" data-rename-project="${escapeHtml(itemId || "")}" ${item.local || item.legacy ? "disabled" : ""}>Rename</button>
-        <button class="danger-action" type="button" data-delete="${escapeHtml(itemId || "")}">Delete</button>
+      <div class="history-card-header">
+        <span class="history-project-icon ${iconClass}" aria-hidden="true"></span>
+        <div class="history-card-heading">
+          <strong>${escapeHtml(displayTitle)}</strong>
+          <div class="history-card-meta">
+            <span class="history-paper-count">${escapeHtml(String(paperCount))} paper${paperCount === 1 ? "" : "s"}</span>
+            <span class="history-meta-separator" aria-hidden="true"></span>
+            <span class="history-status ${statusClass}">${escapeHtml(statusLabel)}</span>
+            <span class="history-meta-separator" aria-hidden="true"></span>
+            <time>${escapeHtml(formatDate(item.updated_at || item.created_at))}</time>
+          </div>
+        </div>
+        <span class="history-card-more" aria-hidden="true">⋮</span>
+      </div>
+      <p class="history-card-summary">${escapeHtml(trimText(item.summary || "No summary available.", 210))}</p>
+      <div class="history-card-footer">
+        ${storageBadge}
+        <div class="history-actions">
+          <button class="history-open-action" type="button" data-open="${escapeHtml(itemId || "")}">Open</button>
+          <button class="history-rename-action" type="button" data-rename-project="${escapeHtml(itemId || "")}" ${item.legacy ? "disabled" : ""}>Rename</button>
+          <button class="danger-action history-delete-action" type="button" data-delete="${escapeHtml(itemId || "")}">Delete</button>
+        </div>
       </div>
     `;
     card.querySelector("[data-open]").addEventListener("click", () => openAnalysisItem(item));
@@ -3055,9 +3439,23 @@ async function deleteHistoryItem(item) {
 }
 
 async function renameHistoryProject(item) {
-  if (!item?.project_id || item.local || item.legacy) return;
+  if (!item?.project_id || item.legacy) return;
   const nextName = window.prompt("Project name", item.name || "Untitled Project");
   if (!nextName || nextName.trim() === item.name) return;
+  if (item.local) {
+    const projects = readAnonymousProjects();
+    const updatedProjects = projects.map((project) => (
+      project.project_id === item.project_id
+        ? {...project, name: nextName.trim(), updated_at: new Date().toISOString()}
+        : project
+    ));
+    writeAnonymousProjects(updatedProjects);
+    if (currentProject?.project_id === item.project_id) {
+      currentProject = {...currentProject, name: nextName.trim()};
+    }
+    await loadHistory();
+    return;
+  }
   try {
     const response = await apiFetch(`/projects/${encodeURIComponent(item.project_id)}`, {
       method: "PATCH",

@@ -53,7 +53,10 @@ def run_pipeline(file_path: str, summary_mode: str = "standard"):
     final_summary = summarize_research_paper(
         summary_input,
         summary_mode=normalized_mode,
+        evidence_sources=evidence_sources,
     )
+    if final_summary.get("error"):
+        raise RuntimeError(str(final_summary["error"]))
     final_summary.setdefault("title", paper_title)
     reference_fields = _reference_result_fields(raw_text)
 

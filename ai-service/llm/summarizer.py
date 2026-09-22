@@ -2,25 +2,107 @@ import os
 import json
 import re
 import time
+import urllib.error
+import urllib.request
+import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Optional
 from google import genai
 from google.genai import types
 from google.genai import errors
 from dotenv import load_dotenv 
+from utils.summary_prompt import normalize_summary_mode
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-# The client gets the API key from the environment variable `GEMINI_API_KEY`.
+# Gemini is optional when DeepDoc runs through local Ollama. Do not construct
+# its client unless a key is configured; recent SDK versions reject an empty
+# key during module import.
 api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(
-    api_key=api_key,
-    http_options=types.HttpOptions(timeout=30000)
+client = (
+    genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=30000),
+    )
+    if api_key
+    else None
 )
 
 gemini_models = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite"]
-request_interval_seconds = 4.1
+llm_provider = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
+ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+ollama_models = [
+    model.strip()
+    for model in os.getenv("DEEPDOC_OLLAMA_MODELS", os.getenv("OLLAMA_MODEL", "qwen3:8b")).split(",")
+    if model.strip()
+]
+ollama_context_length = int(os.getenv("OLLAMA_CONTEXT_LENGTH", "12288"))
+ollama_num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "3072"))
+ollama_keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "10m").strip() or "10m"
+ollama_think = os.getenv("OLLAMA_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
+# Use the accelerator selected by Ollama by default. Set this explicitly to
+# true for reproducible CPU-only VPS benchmarks.
+ollama_cpu_only = os.getenv("OLLAMA_CPU_ONLY", "false").strip().lower() in {"1", "true", "yes", "on"}
+request_interval_seconds = 0.0 if llm_provider == "ollama" else 4.1
 last_request_at = 0.0
+request_llm_provider: ContextVar[str | None] = ContextVar("request_llm_provider", default=None)
+request_llm_model: ContextVar[str | None] = ContextVar("request_llm_model", default=None)
+request_cancellation_token: ContextVar["AnalysisCancellationToken | None"] = ContextVar(
+    "request_cancellation_token", default=None
+)
+
+
+class AnalysisCancelled(RuntimeError):
+    pass
+
+
+class AnalysisCancellationToken:
+    def __init__(self):
+        self._cancelled = threading.Event()
+        self._lock = threading.Lock()
+        self._response = None
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+        with self._lock:
+            response = self._response
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+    def check(self) -> None:
+        if self._cancelled.is_set():
+            raise AnalysisCancelled("Analysis cancelled by user.")
+
+    def attach_response(self, response: Any) -> None:
+        with self._lock:
+            self._response = response
+        self.check()
+
+    def detach_response(self, response: Any) -> None:
+        with self._lock:
+            if self._response is response:
+                self._response = None
+
+
+@contextmanager
+def use_analysis_cancellation(token: AnalysisCancellationToken):
+    token_handle = request_cancellation_token.set(token)
+    try:
+        token.check()
+        yield
+    finally:
+        request_cancellation_token.reset(token_handle)
+
+
+def check_analysis_cancelled() -> None:
+    token = request_cancellation_token.get()
+    if token is not None:
+        token.check()
 
 
 def is_gemini_configured() -> bool:
@@ -34,6 +116,126 @@ def gemini_configuration_error() -> str:
 def require_gemini_api_key() -> None:
     if not is_gemini_configured():
         raise RuntimeError(gemini_configuration_error())
+
+
+def active_llm_provider() -> str:
+    return request_llm_provider.get() or llm_provider
+
+
+def active_llm_model() -> str:
+    selected_model = request_llm_model.get()
+    if selected_model:
+        return selected_model
+    models = ollama_models if active_llm_provider() == "ollama" else gemini_models
+    return models[0] if models else ""
+
+
+def is_llm_configured() -> bool:
+    provider = active_llm_provider()
+    if provider == "gemini":
+        return is_gemini_configured()
+    if provider == "ollama":
+        return bool(ollama_base_url and ollama_models)
+    return False
+
+
+def is_llm_connected() -> bool:
+    if not is_llm_configured():
+        return False
+    if active_llm_provider() == "gemini":
+        return True
+
+    try:
+        request = urllib.request.Request(f"{ollama_base_url}/api/tags", method="GET")
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return False
+
+    available_models = {
+        str(model.get("name") or model.get("model") or "")
+        for model in payload.get("models", [])
+        if isinstance(model, dict)
+    }
+    return active_llm_model() in available_models
+
+
+def llm_configuration_error() -> str:
+    provider = active_llm_provider()
+    if provider == "ollama":
+        return "Ollama is not configured. Set OLLAMA_BASE_URL and OLLAMA_MODEL."
+    if provider == "gemini":
+        return gemini_configuration_error()
+    return f"Unsupported LLM_PROVIDER: {provider}. Use 'gemini' or 'ollama'."
+
+
+def require_llm_configuration() -> None:
+    if not is_llm_configured():
+        raise RuntimeError(llm_configuration_error())
+
+
+def llm_options(selected_provider: str | None = None, selected_model: str | None = None) -> list[dict]:
+    installed_ollama_models: set[str] = set()
+    try:
+        request = urllib.request.Request(f"{ollama_base_url}/api/tags", method="GET")
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        installed_ollama_models = {
+            str(model.get("name") or model.get("model") or "")
+            for model in payload.get("models", [])
+            if isinstance(model, dict)
+        }
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        pass
+
+    chosen_provider = selected_provider or active_llm_provider()
+    chosen_model = selected_model or active_llm_model()
+    choices = [
+        {"provider": "ollama", "model": "qwen3:8b", "label": "Qwen3:8B"},
+        {"provider": "ollama", "model": "qwen3:4b", "label": "Qwen3:4B"},
+        {"provider": "ollama", "model": "qwen3:14b", "label": "Qwen3:14B"},
+        *[
+            {"provider": "gemini", "model": model, "label": model.replace("gemini-", "Gemini ")}
+            for model in gemini_models
+        ],
+    ]
+    for choice in choices:
+        choice["available"] = (
+            choice["model"] in installed_ollama_models
+            if choice["provider"] == "ollama"
+            else is_gemini_configured()
+        )
+        choice["selected"] = choice["provider"] == chosen_provider and choice["model"] == chosen_model
+    return [choice for choice in choices if choice["available"]]
+
+
+def validate_llm_selection(provider: str, model: str) -> tuple[str, str]:
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_model = str(model or "").strip()
+    option = next((
+        item for item in llm_options(normalized_provider, normalized_model)
+        if item["provider"] == normalized_provider and item["model"] == normalized_model
+    ), None)
+    if not option:
+        raise ValueError("Unknown LLM provider or model.")
+    if not option["available"]:
+        raise RuntimeError(f"{option['label']} is not available on this server.")
+    return normalized_provider, normalized_model
+
+
+@contextmanager
+def use_llm_selection(provider: str | None = None, model: str | None = None):
+    if provider or model:
+        selected_provider, selected_model = validate_llm_selection(provider or "", model or "")
+    else:
+        selected_provider, selected_model = llm_provider, active_llm_model()
+    provider_token = request_llm_provider.set(selected_provider)
+    model_token = request_llm_model.set(selected_model)
+    try:
+        yield selected_provider, selected_model
+    finally:
+        request_llm_model.reset(model_token)
+        request_llm_provider.reset(provider_token)
 
 SUMMARY_MODE_INSTRUCTIONS = {
     "paragraph": (
@@ -71,12 +273,6 @@ SUMMARY_MODE_MIN_WORDS = {
     "one_page": 450,
 }
 
-SUMMARY_MODE_TARGET_WORDS = {
-    "paragraph": "100-150",
-    "standard": "220-300",
-    "one_page": "450-700",
-}
-
 SUMMARY_MODE_TARGET_PARAGRAPHS = {
     "paragraph": 2,
     "standard": 4,
@@ -86,9 +282,10 @@ SUMMARY_MODE_TARGET_PARAGRAPHS = {
 def wait_for_rate_limit():
     global last_request_at
 
+    interval = 0.0 if active_llm_provider() == "ollama" else 4.1
     elapsed = time.monotonic() - last_request_at
-    if elapsed < request_interval_seconds:
-        time.sleep(request_interval_seconds - elapsed)
+    if elapsed < interval:
+        time.sleep(interval - elapsed)
 
     last_request_at = time.monotonic()
 
@@ -101,23 +298,97 @@ def extract_json(raw_text: str) -> str:
 
     return cleaned
 
-def generate_json(prompt: str):
-    require_gemini_api_key()
+def _generate_ollama_text(prompt: str, model: str, schema: Optional[dict] = None) -> str:
+    check_analysis_cancelled()
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "format": schema or "json",
+        # Streaming lets cancellation close the response while Ollama is still
+        # generating. The completed text is still returned as one value.
+        "stream": True,
+        "think": ollama_think,
+        "keep_alive": ollama_keep_alive,
+        "options": {
+            "temperature": 0.1,
+            "num_ctx": ollama_context_length,
+            "num_predict": ollama_num_predict,
+            **({"num_gpu": 0} if ollama_cpu_only else {}),
+        },
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        f"{ollama_base_url}/api/chat",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    response = None
+    token = request_cancellation_token.get()
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            if token is not None:
+                token.attach_response(response)
+            content_parts: list[str] = []
+            if hasattr(response, "__iter__"):
+                for raw_line in response:
+                    check_analysis_cancelled()
+                    if not raw_line.strip():
+                        continue
+                    chunk = json.loads(raw_line.decode("utf-8"))
+                    if chunk.get("error"):
+                        raise RuntimeError(f"Ollama request failed: {chunk['error']}")
+                    message = chunk.get("message") or {}
+                    content_parts.append(str(message.get("content") or ""))
+            else:
+                # Compatibility for simple HTTP test doubles and older proxies
+                # that coalesce the stream into one response object.
+                chunk = json.loads(response.read().decode("utf-8"))
+                message = chunk.get("message") or {}
+                content_parts.append(str(message.get("content") or ""))
+            check_analysis_cancelled()
+    except AnalysisCancelled:
+        raise
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Ollama returned HTTP {error.code}: {detail}") from error
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError) as error:
+        if token is not None:
+            token.check()
+        raise RuntimeError(f"Ollama request failed: {error}") from error
+    finally:
+        if token is not None and response is not None:
+            token.detach_response(response)
+
+    return "".join(content_parts)
+
+
+def generate_json(prompt: str, schema: Optional[dict] = None):
+    require_llm_configuration()
+    check_analysis_cancelled()
     last_raw_text = ""
 
-    for model in gemini_models:
+    provider = active_llm_provider()
+    models = [active_llm_model()]
+    for model in models:
         wait_for_rate_limit()
 
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=prompt
-            )
-        except (errors.ClientError, errors.ServerError) as error:
-            last_raw_text = str(error)
-            continue
-
-        raw_text = response.text or ""
+        if provider == "ollama":
+            try:
+                raw_text = _generate_ollama_text(prompt, model, schema=schema)
+            except AnalysisCancelled:
+                raise
+            except RuntimeError as error:
+                last_raw_text = str(error)
+                continue
+        else:
+            if client is None:
+                raise RuntimeError(gemini_configuration_error())
+            try:
+                response = client.models.generate_content(model=model, contents=prompt)
+            except (errors.ClientError, errors.ServerError) as error:
+                last_raw_text = str(error)
+                continue
+            raw_text = response.text or ""
         cleaned = extract_json(raw_text)
 
         try:
@@ -194,13 +465,6 @@ def summarize_document(chunk_summaries: list):
             "error": error.doc
         }
 
-def normalize_summary_mode(summary_mode: str) -> str:
-    if summary_mode in SUMMARY_MODE_INSTRUCTIONS:
-        return summary_mode
-
-    return "standard"
-
-
 def count_words(text: str) -> int:
     return len(re.findall(r"\b[\w'-]+\b", text))
 
@@ -274,17 +538,14 @@ def _enforce_summary_paragraphs(summary: str, summary_mode: str) -> str:
         return "\n\n".join(existing_paragraphs)
 
     sentences = _split_sentences(" ".join(existing_paragraphs) if existing_paragraphs else summary)
-    flat_summary = " ".join(existing_paragraphs) if existing_paragraphs else summary
 
     paragraph_count = target_paragraphs
     if summary_mode == "one_page" and len(sentences) >= 12:
         paragraph_count = 6
 
-    paragraphs = (
-        _chunk_sentences(sentences, paragraph_count)
-        if len(sentences) >= target_paragraphs
-        else _chunk_words(flat_summary, paragraph_count)
-    )
+    if len(sentences) < target_paragraphs:
+        return summary
+    paragraphs = _chunk_sentences(sentences, paragraph_count)
     if len(paragraphs) < target_paragraphs:
         return summary
     return "\n\n".join(paragraphs)
@@ -395,6 +656,16 @@ def normalize_research_summary_result(result: dict, summary_mode: str) -> dict:
                 "claim": claim,
                 "section": section,
                 "pages": pages,
+                "fact_ids": [
+                    str(fact_id)
+                    for fact_id in item.get("fact_ids", [])
+                    if str(fact_id).strip()
+                ],
+                "source_ids": [
+                    str(source_id)
+                    for source_id in item.get("source_ids", [])
+                    if str(source_id).strip()
+                ],
             })
             if len(evidence_items) >= 6:
                 break
@@ -407,59 +678,492 @@ def needs_summary_expansion(result: dict, summary_mode: str) -> bool:
     return count_words(summary) < SUMMARY_MODE_MIN_WORDS[summary_mode]
 
 
-def _evidence_sections_from_packet(evidence_packet: str) -> dict[str, list[int]]:
-    sections: dict[str, list[int]] = {}
-    pattern = re.compile(
-        r"^##\s+([A-Z_]+)(?:\s+\(pages:\s*([^)]+)\))?",
-        re.MULTILINE,
+def _normalized_match_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def _numbers(value: Any) -> set[str]:
+    text = str(value or "").lower()
+    found = set(re.findall(r"(?<![\w.])\d+(?:\.\d+)?%?", text))
+    number_words = {
+        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+        "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+        "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+        "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+        "eighteen": "18", "nineteen": "19", "twenty": "20",
+    }
+    for word, number in number_words.items():
+        if re.search(rf"\b{word}\b", text):
+            found.add(number)
+    return found
+
+
+def _source_map(evidence_sources: list[dict]) -> dict[str, dict]:
+    return {
+        str(source.get("source_id") or ""): source
+        for source in evidence_sources
+        if isinstance(source, dict) and source.get("source_id")
+    }
+
+
+def _claim_supported_by_text(claim: str, source_text: str, min_overlap: float = 0.32) -> bool:
+    if not claim or not source_text:
+        return False
+    if not _numbers(claim).issubset(_numbers(source_text)):
+        return False
+    high_risk_terms = (
+        "novel", "first", "significant", "significantly", "prove", "proves",
+        "causes", "caused", "leads to", "responsible deployment", "internal representation",
+        "highest", "lowest", "best", "worst", "outperform", "outperforms",
+        "higher than", "lower than", "greater than", "less than",
     )
-    for match in pattern.finditer(evidence_packet):
-        section = match.group(1).strip().lower()
-        pages_text = match.group(2) or ""
-        pages = [
-            int(value)
-            for value in re.findall(r"\d+", pages_text)
-        ]
-        sections[section] = pages
-    return sections
+    normalized_claim = _normalized_match_text(claim)
+    normalized_source = _normalized_match_text(source_text)
+    if any(term in normalized_claim and term not in normalized_source for term in high_risk_terms):
+        return False
+    claim_tokens = _content_tokens(claim)
+    source_tokens = _content_tokens(source_text)
+    if not claim_tokens:
+        return False
+    return len(claim_tokens & source_tokens) / len(claim_tokens) >= min_overlap
 
 
-def _normalize_evidence_sources(result: dict, evidence_packet: str) -> None:
-    evidence = result.get("evidence")
-    if not isinstance(evidence, list):
-        return
+FACT_EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "facts": {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 16,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string"},
+                    "fact": {"type": "string", "maxLength": 280},
+                    "source_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 3,
+                    },
+                    "source_quote": {"type": "string", "maxLength": 320},
+                },
+                "required": ["category", "fact", "source_ids", "source_quote"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["facts"],
+    "additionalProperties": False,
+}
 
-    sections = _evidence_sections_from_packet(evidence_packet)
-    empirical_terms = re.compile(
-        r"\b("
-        r"performance|benchmark|accuracy|retrieval|recall|ruler|mqar|"
-        r"distill|distilling|distillation|gain|gains|improve|improves|"
-        r"improved|outperform|baseline|ablation|experiment|robustness"
-        r")\b",
-        re.IGNORECASE,
+
+ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary_paragraphs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "fact_ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["text", "fact_ids"],
+            },
+        },
+        "summary_word_count": {"type": "integer"},
+        "key_ideas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "fact_ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["text", "fact_ids"],
+            },
+        },
+        "contributions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "fact_ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["text", "fact_ids"],
+            },
+        },
+        "evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "fact_ids": {"type": "array", "items": {"type": "string"}},
+                    "source_ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["claim", "fact_ids", "source_ids"],
+            },
+        },
+    },
+    "required": ["summary_paragraphs", "summary_word_count", "key_ideas", "contributions", "evidence"],
+}
+
+
+def build_fact_extraction_prompt(evidence_packet: str, compact: bool = False) -> str:
+    retry_instruction = (
+        "This is a compact retry. Return 8-12 facts only and keep every fact and quote brief."
+        if compact else
+        "Return 12-16 facts only."
     )
+    return f"""
+    Extract atomic, verifiable facts from the research-paper sources below.
+    This is evidence extraction, not summarization. Use only the supplied source text.
 
-    target_section = None
-    if sections.get("experiment"):
-        target_section = "experiment"
-    elif sections.get("results"):
-        target_section = "results"
+    Faithfulness rules:
+    - Every fact must cite one or more exact SOURCE_ID values from the input.
+    - source_quote must be a short verbatim substring from one cited source.
+    - Preserve every number, metric, entity, comparison direction, and experimental scope exactly.
+    - Keep distinct stages distinct: assessed, responded, passed filtering/reliability, and included in final analysis.
+    - Do not infer causality, novelty, significance, intent, implications, or internal mental states.
+    - If the paper does not state something, omit it. Never fill a gap from general knowledge.
+    - {retry_instruction}
+    - MUST extract separate facts for every reported model/sample count and every filtering stage.
+    - Extract the main aggregate results and at most two decision-relevant model comparisons from tables.
+    - Prefer methods, results, tables, and limitations over generic background.
+    - Never extract metric formulas or textbook definitions unless the formula is the paper's central contribution.
+    - Do not enumerate every model or every row of a results table.
+    - Keep fact under 280 characters and source_quote under 320 characters.
+    - Inspect every supplied source block before finishing.
+    - Use one independently checkable assertion per fact.
 
-    if not target_section:
-        return
+    Return ONLY valid JSON:
+    {{
+      "facts": [
+        {{
+          "category": "research_question|method|sample|model|result|comparison|contribution|limitation|conclusion",
+          "fact": "...",
+          "source_ids": ["..."],
+          "source_quote": "..."
+        }}
+      ]
+    }}
 
-    for item in evidence:
+    Sources:
+    {evidence_packet}
+    """
+
+
+def normalize_verified_facts(result: dict, evidence_sources: list[dict]) -> list[dict]:
+    sources = _source_map(evidence_sources)
+    verified: list[dict] = []
+    for item in result.get("facts", []) if isinstance(result, dict) else []:
         if not isinstance(item, dict):
             continue
-        claim = str(item.get("claim") or "")
-        section = str(item.get("section") or "").lower()
-        if section == "abstract" and empirical_terms.search(claim):
-            item["section"] = target_section
-            item["pages"] = sections.get(target_section, item.get("pages") or [])
+        fact = re.sub(r"\s+", " ", str(item.get("fact") or "")).strip()
+        quote = re.sub(r"\s+", " ", str(item.get("source_quote") or "")).strip()
+        source_ids = [
+            str(source_id)
+            for source_id in item.get("source_ids", [])
+            if str(source_id) in sources
+        ]
+        if not fact or not quote or not source_ids:
+            continue
+        cited_text = " ".join(str(sources[source_id].get("excerpt") or "") for source_id in source_ids)
+        if _normalized_match_text(quote) not in _normalized_match_text(cited_text):
+            continue
+        if not _claim_supported_by_text(fact, cited_text):
+            continue
+        verified.append({
+            "fact_id": f"fact_{len(verified) + 1:02d}",
+            "category": str(item.get("category") or "other").strip().lower(),
+            "fact": fact,
+            "source_ids": list(dict.fromkeys(source_ids)),
+            "source_quote": quote,
+        })
+        if len(verified) >= 30:
+            break
+    verified = _augment_high_value_source_facts(verified, evidence_sources)
+    verified = _augment_general_source_facts(verified, evidence_sources)
+    for index, fact in enumerate(verified, start=1):
+        fact["fact_id"] = f"fact_{index:02d}"
+    return verified
+
+
+def _augment_high_value_source_facts(verified: list[dict], evidence_sources: list[dict]) -> list[dict]:
+    """Preserve explicit stage counts and table aggregates even when a small model overlooks them."""
+    seen = {_normalized_match_text(fact.get("fact")) for fact in verified}
+    stage_pattern = re.compile(
+        r"\b(in total|valid responses?|reliable for further|passed (?:the )?(?:filter|reliability)|"
+        r"participants?|respondents?|sample size)\b",
+        re.IGNORECASE,
+    )
+    for source in evidence_sources:
+        source_id = str(source.get("source_id") or "")
+        excerpt = re.sub(r"\s+", " ", str(source.get("excerpt") or "")).strip()
+        if not source_id or not excerpt:
+            continue
+        candidates = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z])", excerpt)
+            if sentence.strip()
+        ]
+        if "avg" in excerpt.lower() and len(_numbers(excerpt)) >= 6:
+            candidates.append(excerpt)
+        for candidate in candidates:
+            if not (stage_pattern.search(candidate) or ("avg" in candidate.lower() and len(_numbers(candidate)) >= 6)):
+                continue
+            normalized = _normalized_match_text(candidate)
+            if normalized in seen:
+                continue
+            total_models = re.search(r"\b(\d+)\s+LLMs?\s+in total\b", candidate, re.IGNORECASE)
+            fact_text = (
+                f"The study selected {total_models.group(1)} LLMs in total."
+                if total_models
+                else candidate
+            )
+            verified.append({
+                "fact_id": "",
+                "category": "result" if ("valid" in candidate.lower() or "reliable" in candidate.lower() or "avg" in candidate.lower()) else "sample",
+                "fact": fact_text,
+                "source_ids": [source_id],
+                "source_quote": candidate,
+            })
+            seen.add(normalized)
+            if len(verified) >= 30:
+                break
+        if len(verified) >= 30:
+            break
+    return verified
+
+
+def _augment_general_source_facts(
+    verified: list[dict],
+    evidence_sources: list[dict],
+    minimum: int = 8,
+) -> list[dict]:
+    """Provide a faithful exact-sentence fallback when a small model misses valid facts."""
+    if len(verified) >= minimum:
+        return verified
+    section_order = {
+        "abstract": 0, "results": 1, "experiment": 2, "method": 3,
+        "conclusion": 4, "introduction": 5, "related_work": 6,
+    }
+    sources = sorted(
+        evidence_sources,
+        key=lambda source: section_order.get(str(source.get("section") or ""), 9),
+    )
+    seen = {_normalized_match_text(fact.get("fact")) for fact in verified}
+    for source in sources:
+        source_id = str(source.get("source_id") or "")
+        section = str(source.get("section") or "other")
+        excerpt = re.sub(r"\s+", " ", str(source.get("excerpt") or "")).strip()
+        if not source_id or not excerpt:
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", excerpt):
+            sentence = sentence.strip()
+            normalized = _normalized_match_text(sentence)
+            if not 45 <= len(sentence) <= 360 or len(_content_tokens(sentence)) < 6:
+                continue
+            if normalized in seen or " = " in sentence or sentence.lower().startswith(("table ", "figure ")):
+                continue
+            verified.append({
+                "fact_id": "",
+                "category": (
+                    "result" if section == "results"
+                    else section if section in {"method", "experiment", "conclusion", "related_work"}
+                    else "research_question" if section == "abstract"
+                    else "other"
+                ),
+                "fact": sentence,
+                "source_ids": [source_id],
+                "source_quote": sentence,
+            })
+            seen.add(normalized)
+            if len(verified) >= minimum:
+                return verified
+    return verified
+
+
+def _facts_by_id(verified_facts: list[dict]) -> dict[str, dict]:
+    return {
+        str(fact.get("fact_id") or ""): fact
+        for fact in verified_facts
+        if fact.get("fact_id")
+    }
+
+
+def _supported_sentences(text: str, fact_ids: list[str], verified_facts: list[dict]) -> str:
+    facts = _facts_by_id(verified_facts)
+    cited_facts = " ".join(
+        str(facts[fact_id].get("fact") or "")
+        for fact_id in fact_ids
+        if fact_id in facts
+    )
+    if not cited_facts:
+        return ""
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", str(text or "")).strip())
+        if sentence.strip()
+    ]
+    supported = [
+        _clean_generated_sentence(sentence)
+        for sentence in sentences
+        if _claim_supported_by_text(sentence, cited_facts, min_overlap=0.5)
+    ]
+    return " ".join(supported)
+
+
+def _clean_generated_sentence(sentence: str) -> str:
+    cleaned = re.sub(r"\b(a|an):\s+(?=[a-z])", r"\1 ", sentence.strip(), flags=re.IGNORECASE)
+    if cleaned and cleaned[-1] not in ".!?":
+        cleaned += "."
+    return cleaned
+
+
+def normalize_grounded_analysis_result(result: dict, verified_facts: list[dict]) -> dict:
+    grounded = dict(result or {})
+    paragraphs: list[str] = []
+    for item in grounded.get("summary_paragraphs", []) if isinstance(grounded.get("summary_paragraphs"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        paragraph = _supported_sentences(
+            str(item.get("text") or ""),
+            [str(fact_id) for fact_id in item.get("fact_ids", [])],
+            verified_facts,
+        )
+        if paragraph:
+            paragraphs.append(paragraph)
+    grounded["summary"] = "\n\n".join(paragraphs)
+
+    for field in ("key_ideas", "contributions"):
+        supported_items: list[str] = []
+        raw_items = grounded.get(field, [])
+        if isinstance(raw_items, list):
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+                supported = _supported_sentences(
+                    str(item.get("text") or ""),
+                    [str(fact_id) for fact_id in item.get("fact_ids", [])],
+                    verified_facts,
+                )
+                if supported:
+                    supported_items.append(supported)
+        grounded[field] = supported_items
+    if not grounded.get("key_ideas"):
+        preferred_categories = ("research_question", "method", "result", "conclusion")
+        grounded["key_ideas"] = [
+            str(fact.get("fact") or "")
+            for category in preferred_categories
+            for fact in verified_facts
+            if fact.get("category") == category and 20 <= len(str(fact.get("fact") or "")) <= 260
+        ][:4]
+    return grounded
+
+
+def supplement_short_summary(result: dict, verified_facts: list[dict], summary_mode: str) -> None:
+    """Prefer adding verified atomic facts over asking the model to invent filler."""
+    minimum = SUMMARY_MODE_MIN_WORDS[summary_mode]
+    summary = str(result.get("summary") or "").strip()
+    if count_words(summary) >= minimum:
+        return
+    category_weight = {
+        "sample": 0, "experiment": 0, "result": 1, "comparison": 1,
+        "method": 2, "limitation": 3, "conclusion": 3, "research_question": 4,
+    }
+    candidates = sorted(
+        verified_facts,
+        key=lambda fact: (
+            category_weight.get(str(fact.get("category") or ""), 6),
+            0 if _numbers(fact.get("fact")) else 1,
+        ),
+    )
+    additions: list[str] = []
+    existing = [summary] if summary else []
+    for fact in candidates:
+        text = re.sub(r"\s+", " ", str(fact.get("fact") or "")).strip()
+        if not text or len(text) > 420 or " = " in text:
+            continue
+        text_tokens = _content_tokens(text)
+        summary_tokens = _content_tokens(" ".join(existing + additions))
+        coverage = len(text_tokens & summary_tokens) / max(1, len(text_tokens))
+        if coverage >= 0.5 or any(_is_near_duplicate(text, item) for item in existing + additions):
+            continue
+        additions.append(_clean_generated_sentence(text))
+        if count_words("\n\n".join(existing + additions)) >= minimum:
+            break
+    if additions:
+        result["summary"] = f"{summary} {' '.join(additions)}".strip()
+
+
+def extract_verified_facts(evidence_packet: str, evidence_sources: list[dict]) -> list[dict]:
+    try:
+        raw_facts = generate_json(build_fact_extraction_prompt(evidence_packet), schema=FACT_EXTRACTION_SCHEMA)
+    except json.JSONDecodeError:
+        check_analysis_cancelled()
+        raw_facts = generate_json(
+            build_fact_extraction_prompt(evidence_packet, compact=True),
+            schema=FACT_EXTRACTION_SCHEMA,
+        )
+    return normalize_verified_facts(raw_facts, evidence_sources)
+
+
+def _normalize_grounded_evidence(
+    result: dict,
+    verified_facts: list[dict],
+    evidence_sources: list[dict],
+) -> None:
+    sources = _source_map(evidence_sources)
+    facts_by_source: dict[str, list[str]] = {}
+    for fact in verified_facts:
+        for source_id in fact.get("source_ids", []):
+            facts_by_source.setdefault(source_id, []).append(str(fact.get("fact") or ""))
+
+    grounded: list[dict] = []
+    for item in result.get("evidence", []) if isinstance(result.get("evidence"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        claim = re.sub(r"\s+", " ", str(item.get("claim") or "")).strip()
+        fact_ids = [str(fact_id) for fact_id in item.get("fact_ids", [])]
+        cited_facts = _facts_by_id(verified_facts)
+        source_ids = [
+            str(source_id)
+            for source_id in item.get("source_ids", [])
+            if str(source_id) in sources and facts_by_source.get(str(source_id))
+        ]
+        supporting_facts = " ".join(
+            str(cited_facts[fact_id].get("fact") or "")
+            for fact_id in fact_ids
+            if fact_id in cited_facts
+        ) or " ".join(fact for source_id in source_ids for fact in facts_by_source.get(source_id, []))
+        if not source_ids or not _claim_supported_by_text(claim, supporting_facts, min_overlap=0.5):
+            continue
+        pages: list[int] = []
+        sections: list[str] = []
+        for source_id in source_ids:
+            source = sources[source_id]
+            sections.append(str(source.get("section") or "unknown"))
+            for page in source.get("pages", []):
+                if page not in pages:
+                    pages.append(page)
+        grounded.append({
+            "claim": claim,
+            "fact_ids": [fact_id for fact_id in fact_ids if fact_id in cited_facts],
+            "source_ids": source_ids,
+            "section": sections[0] if len(set(sections)) == 1 else "multiple",
+            "pages": pages,
+        })
+        if len(grounded) >= 6:
+            break
+    result["evidence"] = grounded
 
 
 def build_research_summary_prompt(
-    evidence_packet: str,
+    verified_facts: list[dict],
     summary_mode: str,
     retry_word_count: Optional[int] = None,
 ) -> str:
@@ -473,14 +1177,14 @@ def build_research_summary_prompt(
     """
 
     return f"""
-    You are analyzing a research paper from selected high-value sections.
-    Only use information from the provided text. Do not invent details.
+    Write a research-paper analysis using only VERIFIED_FACTS below.
+    The facts have already been checked against source excerpts. Do not add information from memory.
 
     Summary mode: {summary_mode}
     Length requirement: {length_instruction}
     Treat the selected mode as a distinct reader task, not as a short/medium/long version of the same summary.
     The mode's task and optimization goal are more important than merely hitting a word count.
-    The length requirement applies only to the "summary" field.
+    The length requirement applies to the combined text in summary_paragraphs.
     Do not count key_ideas, contributions, references, evidence, or summary_word_count toward the word count.
     Do not generate one continuous block of text. Use well-balanced paragraphs with clear logical progression.
     Each paragraph should focus on one primary purpose.
@@ -489,71 +1193,104 @@ def build_research_summary_prompt(
     Information architecture:
     - The "summary" field is an Overview. It should tell the overall narrative of the paper:
       context, why the problem matters, the broad approach, and the final takeaway.
-    - Do not repeat the key ideas or contributions in detail inside the Overview.
-      Those belong in the dedicated "key_ideas" and "contributions" fields.
+    - The Overview must include the central method and the most important supported findings when available.
     - "key_ideas" should capture the most important conceptual ideas needed to understand the paper.
       Avoid phrasing these as novelty claims.
     - "contributions" should capture what is genuinely new or added by the paper.
       Avoid repeating general background, motivation, or the same wording used in key_ideas.
     - Keep all fields evidence-grounded.
+    - Every summary paragraph, key idea, contribution, and evidence item must cite the exact fact_ids it uses.
+    - Every sentence must be fully supported by its cited facts; do not add transitions that introduce new claims.
+    - Cite one fact_id per sentence whenever possible. Do not print fact_ids inside prose.
+    - Include the main sample/model counts, filtering-stage counts, and 2-4 central quantitative results when available.
+    - Omit unsupported details instead of making the answer sound complete.
+    - Do not merge counts or outcomes from different experimental stages.
+    - Do not turn correlation or comparison into causality.
+    - Avoid claims about authenticity, understanding, awareness, intent, or internal representations unless a verified fact explicitly states them.
 
     Evidence selection rules:
     - Prefer specific evidence from method, experiment, results, or conclusion sections.
     - Use abstract evidence only for high-level framing or definitions that are not repeated in later sections.
     - For empirical claims about performance, benchmarks, accuracy, retrieval, robustness, ablations, distillation,
       or comparisons against baselines, choose experiment or results pages rather than the abstract.
-    - Each evidence claim should be anchored to the most specific section and page range available in the paper text.
+    - Each evidence claim must cite source_ids copied exactly from VERIFIED_FACTS.
     - Include 4-6 evidence items when enough grounded claims are available.
     Return ONLY valid JSON:
     {{
-      "summary": "...",
+      "summary_paragraphs": [
+        {{"text": "...", "fact_ids": ["fact_01", "fact_02"]}}
+      ],
       "summary_word_count": 0,
-      "key_ideas": ["...", "..."],
-      "contributions": ["...", "..."],
+      "key_ideas": [{{"text": "...", "fact_ids": ["fact_01"]}}],
+      "contributions": [{{"text": "...", "fact_ids": ["fact_02"]}}],
       "evidence": [
         {{
           "claim": "...",
-          "section": "abstract|introduction|method|experiment|results|conclusion|related_work",
-          "pages": [1, 2]
+          "fact_ids": ["fact_01"],
+          "source_ids": ["..."]
         }}
       ]
     }}
 
-    Paper text:
-    {evidence_packet}
+    VERIFIED_FACTS:
+    {json.dumps(verified_facts, ensure_ascii=False)}
     """
 
 
-def summarize_research_paper(evidence_packet: str, summary_mode: str = "standard"):
+def summarize_research_paper(
+    evidence_packet: str,
+    summary_mode: str = "standard",
+    evidence_sources: Optional[list[dict]] = None,
+):
     normalized_mode = normalize_summary_mode(summary_mode)
-    prompt = build_research_summary_prompt(evidence_packet, normalized_mode)
+    sources = evidence_sources or []
 
     try:
-        result = generate_json(prompt)
+        check_analysis_cancelled()
+        verified_facts = extract_verified_facts(evidence_packet, sources)
+        if not verified_facts:
+            raise RuntimeError("No source-grounded facts passed verification.")
+        prompt = build_research_summary_prompt(verified_facts, normalized_mode)
+        used_deterministic_fallback = False
+        try:
+            result = generate_json(prompt, schema=ANALYSIS_SCHEMA)
+        except json.JSONDecodeError:
+            used_deterministic_fallback = True
+            result = {
+                "summary_paragraphs": [],
+                "summary_word_count": 0,
+                "key_ideas": [],
+                "contributions": [],
+                "evidence": [],
+            }
+        result = normalize_grounded_analysis_result(result, verified_facts)
+        supplement_short_summary(result, verified_facts, normalized_mode)
         result = normalize_research_summary_result(result, normalized_mode)
         word_count = result["summary_word_count"]
-        _normalize_evidence_sources(result, evidence_packet)
-
-        if needs_summary_expansion(result, normalized_mode):
-            retry_prompt = build_research_summary_prompt(
-                evidence_packet,
-                normalized_mode,
-                retry_word_count=word_count,
-            )
-            retry_result = generate_json(retry_prompt)
-            retry_result = normalize_research_summary_result(retry_result, normalized_mode)
-            _normalize_evidence_sources(retry_result, evidence_packet)
-            return retry_result
+        _normalize_grounded_evidence(result, verified_facts, sources)
+        result["verified_facts"] = verified_facts
+        result["faithfulness"] = {
+            "verified_fact_count": len(verified_facts),
+            "grounded_evidence_count": len(result.get("evidence", [])),
+            "deterministic_fallback": used_deterministic_fallback,
+        }
 
         return result
-    except json.JSONDecodeError as error:
+    except AnalysisCancelled:
+        raise
+    except (json.JSONDecodeError, RuntimeError) as error:
         return {
             "summary": "Document summary failed.",
             "summary_word_count": 0,
             "key_ideas": [],
             "contributions": [],
             "evidence": [],
-            "error": error.doc
+            "faithfulness": {"verified_fact_count": 0, "grounded_evidence_count": 0},
+            "error": (
+                "The local model returned incomplete structured output after a compact retry. Please retry the analysis."
+                if isinstance(error, json.JSONDecodeError)
+                else str(error)
+            ),
         }
 
 
