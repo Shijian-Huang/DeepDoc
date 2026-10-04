@@ -2,17 +2,18 @@ import os
 import json
 import re
 import time
-import urllib.error
-import urllib.request
-import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Optional
-from google import genai
-from google.genai import types
-from google.genai import errors
 from dotenv import load_dotenv 
+from llm.cancellation import (
+    AnalysisCancelled,
+    AnalysisCancellationToken,
+    check_analysis_cancelled,
+    use_analysis_cancellation,
+)
+from llm.providers import GeminiProvider, OllamaProvider
 from utils.summary_prompt import normalize_summary_mode
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -21,14 +22,8 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 # its client unless a key is configured; recent SDK versions reject an empty
 # key during module import.
 api_key = os.getenv("GEMINI_API_KEY")
-client = (
-    genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(timeout=30000),
-    )
-    if api_key
-    else None
-)
+gemini_provider = GeminiProvider(api_key)
+client = gemini_provider.client
 
 gemini_models = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite"]
 llm_provider = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
@@ -49,60 +44,25 @@ request_interval_seconds = 0.0 if llm_provider == "ollama" else 4.1
 last_request_at = 0.0
 request_llm_provider: ContextVar[str | None] = ContextVar("request_llm_provider", default=None)
 request_llm_model: ContextVar[str | None] = ContextVar("request_llm_model", default=None)
-request_cancellation_token: ContextVar["AnalysisCancellationToken | None"] = ContextVar(
-    "request_cancellation_token", default=None
-)
 
 
-class AnalysisCancelled(RuntimeError):
-    pass
+def _ollama_provider() -> OllamaProvider:
+    return OllamaProvider(
+        base_url=ollama_base_url,
+        context_length=ollama_context_length,
+        num_predict=ollama_num_predict,
+        keep_alive=ollama_keep_alive,
+        think=ollama_think,
+        cpu_only=ollama_cpu_only,
+    )
 
 
-class AnalysisCancellationToken:
-    def __init__(self):
-        self._cancelled = threading.Event()
-        self._lock = threading.Lock()
-        self._response = None
-
-    def cancel(self) -> None:
-        self._cancelled.set()
-        with self._lock:
-            response = self._response
-        if response is not None:
-            try:
-                response.close()
-            except Exception:
-                pass
-
-    def check(self) -> None:
-        if self._cancelled.is_set():
-            raise AnalysisCancelled("Analysis cancelled by user.")
-
-    def attach_response(self, response: Any) -> None:
-        with self._lock:
-            self._response = response
-        self.check()
-
-    def detach_response(self, response: Any) -> None:
-        with self._lock:
-            if self._response is response:
-                self._response = None
-
-
-@contextmanager
-def use_analysis_cancellation(token: AnalysisCancellationToken):
-    token_handle = request_cancellation_token.set(token)
-    try:
-        token.check()
-        yield
-    finally:
-        request_cancellation_token.reset(token_handle)
-
-
-def check_analysis_cancelled() -> None:
-    token = request_cancellation_token.get()
-    if token is not None:
-        token.check()
+def _gemini_provider() -> GeminiProvider:
+    # Preserve the module-level client as a compatibility seam for existing tests
+    # and scripts while provider ownership moves out of this module.
+    provider = GeminiProvider(None)
+    provider.client = client
+    return provider
 
 
 def is_gemini_configured() -> bool:
@@ -145,19 +105,7 @@ def is_llm_connected() -> bool:
     if active_llm_provider() == "gemini":
         return True
 
-    try:
-        request = urllib.request.Request(f"{ollama_base_url}/api/tags", method="GET")
-        with urllib.request.urlopen(request, timeout=1.5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        return False
-
-    available_models = {
-        str(model.get("name") or model.get("model") or "")
-        for model in payload.get("models", [])
-        if isinstance(model, dict)
-    }
-    return active_llm_model() in available_models
+    return active_llm_model() in _ollama_provider().installed_models()
 
 
 def llm_configuration_error() -> str:
@@ -175,18 +123,7 @@ def require_llm_configuration() -> None:
 
 
 def llm_options(selected_provider: str | None = None, selected_model: str | None = None) -> list[dict]:
-    installed_ollama_models: set[str] = set()
-    try:
-        request = urllib.request.Request(f"{ollama_base_url}/api/tags", method="GET")
-        with urllib.request.urlopen(request, timeout=1.5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        installed_ollama_models = {
-            str(model.get("name") or model.get("model") or "")
-            for model in payload.get("models", [])
-            if isinstance(model, dict)
-        }
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        pass
+    installed_ollama_models = _ollama_provider().installed_models()
 
     chosen_provider = selected_provider or active_llm_provider()
     chosen_model = selected_model or active_llm_model()
@@ -298,70 +235,6 @@ def extract_json(raw_text: str) -> str:
 
     return cleaned
 
-def _generate_ollama_text(prompt: str, model: str, schema: Optional[dict] = None) -> str:
-    check_analysis_cancelled()
-    payload = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "format": schema or "json",
-        # Streaming lets cancellation close the response while Ollama is still
-        # generating. The completed text is still returned as one value.
-        "stream": True,
-        "think": ollama_think,
-        "keep_alive": ollama_keep_alive,
-        "options": {
-            "temperature": 0.1,
-            "num_ctx": ollama_context_length,
-            "num_predict": ollama_num_predict,
-            **({"num_gpu": 0} if ollama_cpu_only else {}),
-        },
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        f"{ollama_base_url}/api/chat",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    response = None
-    token = request_cancellation_token.get()
-    try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            if token is not None:
-                token.attach_response(response)
-            content_parts: list[str] = []
-            if hasattr(response, "__iter__"):
-                for raw_line in response:
-                    check_analysis_cancelled()
-                    if not raw_line.strip():
-                        continue
-                    chunk = json.loads(raw_line.decode("utf-8"))
-                    if chunk.get("error"):
-                        raise RuntimeError(f"Ollama request failed: {chunk['error']}")
-                    message = chunk.get("message") or {}
-                    content_parts.append(str(message.get("content") or ""))
-            else:
-                # Compatibility for simple HTTP test doubles and older proxies
-                # that coalesce the stream into one response object.
-                chunk = json.loads(response.read().decode("utf-8"))
-                message = chunk.get("message") or {}
-                content_parts.append(str(message.get("content") or ""))
-            check_analysis_cancelled()
-    except AnalysisCancelled:
-        raise
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Ollama returned HTTP {error.code}: {detail}") from error
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError) as error:
-        if token is not None:
-            token.check()
-        raise RuntimeError(f"Ollama request failed: {error}") from error
-    finally:
-        if token is not None and response is not None:
-            token.detach_response(response)
-
-    return "".join(content_parts)
-
-
 def generate_json(prompt: str, schema: Optional[dict] = None):
     require_llm_configuration()
     check_analysis_cancelled()
@@ -372,23 +245,14 @@ def generate_json(prompt: str, schema: Optional[dict] = None):
     for model in models:
         wait_for_rate_limit()
 
-        if provider == "ollama":
-            try:
-                raw_text = _generate_ollama_text(prompt, model, schema=schema)
-            except AnalysisCancelled:
-                raise
-            except RuntimeError as error:
-                last_raw_text = str(error)
-                continue
-        else:
-            if client is None:
-                raise RuntimeError(gemini_configuration_error())
-            try:
-                response = client.models.generate_content(model=model, contents=prompt)
-            except (errors.ClientError, errors.ServerError) as error:
-                last_raw_text = str(error)
-                continue
-            raw_text = response.text or ""
+        selected_provider = _ollama_provider() if provider == "ollama" else _gemini_provider()
+        try:
+            raw_text = selected_provider.generate_text(prompt, model, schema=schema)
+        except AnalysisCancelled:
+            raise
+        except RuntimeError as error:
+            last_raw_text = str(error)
+            continue
         cleaned = extract_json(raw_text)
 
         try:
