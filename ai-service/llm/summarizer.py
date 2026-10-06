@@ -441,7 +441,7 @@ def _as_text_list(value: Any) -> list[str]:
     return texts
 
 
-def _content_tokens(text: str) -> set[str]:
+def _summary_content_tokens(text: str) -> set[str]:
     stopwords = {
         "the", "and", "for", "with", "that", "this", "from", "into", "their",
         "paper", "study", "approach", "method", "results", "show", "shows",
@@ -455,8 +455,8 @@ def _content_tokens(text: str) -> set[str]:
 
 
 def _is_near_duplicate(left: str, right: str) -> bool:
-    left_tokens = _content_tokens(left)
-    right_tokens = _content_tokens(right)
+    left_tokens = _summary_content_tokens(left)
+    right_tokens = _summary_content_tokens(right)
     if not left_tokens or not right_tokens:
         return left.strip().lower() == right.strip().lower()
     overlap = len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
@@ -548,6 +548,7 @@ def _normalized_match_text(value: Any) -> str:
 
 def _numbers(value: Any) -> set[str]:
     text = str(value or "").lower()
+    text = re.sub(r"(\d+(?:\.\d+)?)\s*(?:percent\b|per\s+cent\b|%)", r"\1%", text)
     found = set(re.findall(r"(?<![\w.])\d+(?:\.\d+)?%?", text))
     number_words = {
         "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
@@ -720,7 +721,7 @@ def build_fact_extraction_prompt(evidence_packet: str, compact: bool = False) ->
     """
 
 
-def normalize_verified_facts(result: dict, evidence_sources: list[dict]) -> list[dict]:
+def normalize_verified_facts(result: dict, evidence_sources: list[dict], diagnostics: Optional[dict] = None) -> list[dict]:
     sources = _source_map(evidence_sources)
     verified: list[dict] = []
     for item in result.get("facts", []) if isinstance(result, dict) else []:
@@ -749,10 +750,18 @@ def normalize_verified_facts(result: dict, evidence_sources: list[dict]) -> list
         })
         if len(verified) >= 30:
             break
+    accepted_count = len(verified)
     verified = _augment_high_value_source_facts(verified, evidence_sources)
     verified = _augment_general_source_facts(verified, evidence_sources)
     for index, fact in enumerate(verified, start=1):
         fact["fact_id"] = f"fact_{index:02d}"
+    if diagnostics is not None:
+        diagnostics.update({
+            "generated_fact_count": len(result.get("facts", [])),
+            "accepted_generated_fact_count": accepted_count,
+            "source_supplement_count": len(verified) - accepted_count,
+            "verified_fact_count": len(verified),
+        })
     return verified
 
 
@@ -859,25 +868,32 @@ def _facts_by_id(verified_facts: list[dict]) -> dict[str, dict]:
     }
 
 
-def _supported_sentences(text: str, fact_ids: list[str], verified_facts: list[dict]) -> str:
+def _supported_sentences(text: str, fact_ids: list[str], verified_facts: list[dict], diagnostics: Optional[dict] = None, field: str = "summary") -> str:
     facts = _facts_by_id(verified_facts)
     cited_facts = " ".join(
         str(facts[fact_id].get("fact") or "")
         for fact_id in fact_ids
         if fact_id in facts
     )
-    if not cited_facts:
-        return ""
     sentences = [
         sentence.strip()
         for sentence in re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", str(text or "")).strip())
         if sentence.strip()
     ]
-    supported = [
-        _clean_generated_sentence(sentence)
-        for sentence in sentences
-        if _claim_supported_by_text(sentence, cited_facts, min_overlap=0.5)
-    ]
+    supported = []
+    for sentence in sentences:
+        accepted = bool(cited_facts) and _claim_supported_by_text(sentence, cited_facts, min_overlap=0.5)
+        if accepted:
+            supported.append(_clean_generated_sentence(sentence))
+        if diagnostics is not None:
+            diagnostics["checked_sentence_count"] = diagnostics.get("checked_sentence_count", 0) + 1
+            if not accepted:
+                diagnostics.setdefault("filtered_sentences", []).append({
+                    "field": field,
+                    "text": sentence,
+                    "fact_ids": fact_ids,
+                    "reason": "no_valid_cited_facts" if not cited_facts else "support_heuristic_failed",
+                })
     return " ".join(supported)
 
 
@@ -888,7 +904,7 @@ def _clean_generated_sentence(sentence: str) -> str:
     return cleaned
 
 
-def normalize_grounded_analysis_result(result: dict, verified_facts: list[dict]) -> dict:
+def normalize_grounded_analysis_result(result: dict, verified_facts: list[dict], diagnostics: Optional[dict] = None) -> dict:
     grounded = dict(result or {})
     paragraphs: list[str] = []
     for item in grounded.get("summary_paragraphs", []) if isinstance(grounded.get("summary_paragraphs"), list) else []:
@@ -898,6 +914,7 @@ def normalize_grounded_analysis_result(result: dict, verified_facts: list[dict])
             str(item.get("text") or ""),
             [str(fact_id) for fact_id in item.get("fact_ids", [])],
             verified_facts,
+            diagnostics=diagnostics,
         )
         if paragraph:
             paragraphs.append(paragraph)
@@ -914,6 +931,8 @@ def normalize_grounded_analysis_result(result: dict, verified_facts: list[dict])
                     str(item.get("text") or ""),
                     [str(fact_id) for fact_id in item.get("fact_ids", [])],
                     verified_facts,
+                    diagnostics=diagnostics,
+                    field=field,
                 )
                 if supported:
                     supported_items.append(supported)
@@ -964,16 +983,20 @@ def supplement_short_summary(result: dict, verified_facts: list[dict], summary_m
         result["summary"] = f"{summary} {' '.join(additions)}".strip()
 
 
-def extract_verified_facts(evidence_packet: str, evidence_sources: list[dict]) -> list[dict]:
+def extract_verified_facts(evidence_packet: str, evidence_sources: list[dict], diagnostics: Optional[dict] = None) -> list[dict]:
+    if diagnostics is not None:
+        diagnostics["compact_retry"] = False
     try:
         raw_facts = generate_json(build_fact_extraction_prompt(evidence_packet), schema=FACT_EXTRACTION_SCHEMA)
     except json.JSONDecodeError:
+        if diagnostics is not None:
+            diagnostics["compact_retry"] = True
         check_analysis_cancelled()
         raw_facts = generate_json(
             build_fact_extraction_prompt(evidence_packet, compact=True),
             schema=FACT_EXTRACTION_SCHEMA,
         )
-    return normalize_verified_facts(raw_facts, evidence_sources)
+    return normalize_verified_facts(raw_facts, evidence_sources, diagnostics=diagnostics)
 
 
 def _normalize_grounded_evidence(
@@ -1108,14 +1131,18 @@ def summarize_research_paper(
 ):
     normalized_mode = normalize_summary_mode(summary_mode)
     sources = evidence_sources or []
+    diagnostics: dict[str, Any] = {"stage_seconds": {}, "filtered_sentences": []}
+    started_at = time.perf_counter()
 
     try:
         check_analysis_cancelled()
-        verified_facts = extract_verified_facts(evidence_packet, sources)
+        verified_facts = extract_verified_facts(evidence_packet, sources, diagnostics=diagnostics)
+        diagnostics["stage_seconds"]["fact_extraction_and_verification"] = round(time.perf_counter() - started_at, 4)
         if not verified_facts:
             raise RuntimeError("No source-grounded facts passed verification.")
         prompt = build_research_summary_prompt(verified_facts, normalized_mode)
         used_deterministic_fallback = False
+        generation_started = time.perf_counter()
         try:
             result = generate_json(prompt, schema=ANALYSIS_SCHEMA)
         except json.JSONDecodeError:
@@ -1127,11 +1154,17 @@ def summarize_research_paper(
                 "contributions": [],
                 "evidence": [],
             }
-        result = normalize_grounded_analysis_result(result, verified_facts)
+        diagnostics["stage_seconds"]["generation"] = round(time.perf_counter() - generation_started, 4)
+        processing_started = time.perf_counter()
+        result = normalize_grounded_analysis_result(result, verified_facts, diagnostics=diagnostics)
         supplement_short_summary(result, verified_facts, normalized_mode)
         result = normalize_research_summary_result(result, normalized_mode)
         word_count = result["summary_word_count"]
         _normalize_grounded_evidence(result, verified_facts, sources)
+        diagnostics["stage_seconds"]["postprocessing"] = round(time.perf_counter() - processing_started, 4)
+        diagnostics["deterministic_fallback"] = used_deterministic_fallback
+        diagnostics["total_seconds"] = round(time.perf_counter() - started_at, 4)
+        result["diagnostics"] = diagnostics
         result["verified_facts"] = verified_facts
         result["faithfulness"] = {
             "verified_fact_count": len(verified_facts),
@@ -1143,7 +1176,9 @@ def summarize_research_paper(
     except AnalysisCancelled:
         raise
     except (json.JSONDecodeError, RuntimeError) as error:
+        diagnostics["total_seconds"] = round(time.perf_counter() - started_at, 4)
         return {
+            "diagnostics": diagnostics,
             "summary": "Document summary failed.",
             "summary_word_count": 0,
             "key_ideas": [],

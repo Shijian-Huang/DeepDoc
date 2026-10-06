@@ -191,3 +191,10 @@ After a deploy, verify:
 - `GET /analyses/{analysis_id}/pdf`
 - `GET /analyses/{analysis_id}/download`
 - `DELETE /analyses/{analysis_id}`
+# Video generation
+
+Narrated MP4 generation is paused by default (`VIDEO_ENABLED=false`). Slides
+generation and existing video downloads remain available. Missing Piper or
+FFmpeg dependencies do not degrade overall health while video is disabled.
+To resume, configure the video dependencies, set `VIDEO_ENABLED=true`, and
+restart the service. `/health` reports `video_enabled` and `mp4_ready`.
