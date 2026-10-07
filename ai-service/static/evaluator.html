@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeepDoc Evaluator</title>
+  <link rel="stylesheet" href="/static/evaluator.css?v=selected-models-all-20260922">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <a class="brand" href="/">DEEPDOC <span>/ EVALUATOR</span></a>
+      <p>Compare research-summary quality against source-grounded evidence.</p>
+    </header>
+
+    <section class="panel controls" aria-labelledby="setup-heading">
+      <div class="section-title">
+        <div><span>01</span><h1 id="setup-heading">Evaluation setup</h1></div>
+        <span class="status" id="status">Loading configuration…</span>
+      </div>
+
+      <div class="field wide">
+        <label for="scenario">Evaluation view</label>
+        <select id="scenario">
+          <option value="single-single">One model · one paper</option>
+          <option value="single-all">One model · all papers (average)</option>
+          <option value="all-single">All models · one paper</option>
+          <option value="selected-single">Selected models · one paper</option>
+          <option value="selected-all">Selected models · all papers (average)</option>
+          <option value="all-all">All models · all papers (average)</option>
+          <option value="custom">Custom summary</option>
+          <option value="custom-compare">Custom summary · compare with models</option>
+        </select>
+      </div>
+
+      <div class="field" id="model-field">
+        <label for="models">Model</label>
+        <select id="models"></select>
+        <small id="model-help">Select the summary model to evaluate.</small>
+      </div>
+
+      <div class="field" id="paper-field">
+        <label for="papers">Paper</label>
+        <select id="papers"></select>
+      </div>
+
+      <fieldset class="field mode-field">
+        <legend>Summary mode</legend>
+        <div id="summary-modes" class="mode-options"></div>
+      </fieldset>
+
+      <div id="custom-fields" class="custom-fields hidden">
+        <div class="field">
+          <label for="reference-paper">Reference paper</label>
+          <input id="reference-paper" type="file" accept=".pdf,.txt,.md,.markdown,.docx">
+          <small>PDF, text, Markdown, or DOCX · maximum 30 MB</small>
+        </div>
+        <div class="field wide">
+          <label for="custom-summary">Summary to evaluate</label>
+          <textarea id="custom-summary" rows="8" placeholder="Paste the candidate summary here…"></textarea>
+        </div>
+      </div>
+
+      <div class="actions wide">
+        <button id="evaluate" class="primary">Run evaluation</button>
+        <button id="force" class="secondary" title="Ignore cached results and run the summary → evaluation pipeline again">Force re-summarize &amp; evaluate</button>
+      </div>
+    </section>
+
+    <section class="panel results-panel" aria-labelledby="results-heading">
+      <div class="section-title">
+        <div><span>02</span><h2 id="results-heading">Results</h2></div>
+        <button id="clear-history" class="text-button">Clear local history</button>
+      </div>
+      <div id="empty-state" class="empty-state">
+        <strong>No evaluation selected</strong>
+        <p>Results are generated only when requested and saved in this browser for later comparison.</p>
+      </div>
+      <div id="results" class="results hidden"></div>
+    </section>
+
+    <section class="history" aria-labelledby="history-heading">
+      <div class="section-title compact">
+        <div><span>03</span><h2 id="history-heading">Recent comparisons</h2></div>
+      </div>
+      <div id="history-list" class="history-list"></div>
+    </section>
+  </main>
+  <script src="/static/evaluator.js?v=selected-models-all-20260922" defer></script>
+</body>
+</html>
