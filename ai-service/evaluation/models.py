@@ -7,6 +7,8 @@ interface accepted by :class:`llm.evaluator.SummaryEvaluator`.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
@@ -32,6 +34,15 @@ class ConfiguredLLMModel:
     name: str
     provider: str
     model: str
+
+    @property
+    def cache_identity(self) -> str:
+        value = json.dumps(
+            {"provider": self.provider, "model": self.model},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     def summarize(self, prompt: str) -> SummaryValue:
         with summarizer.use_llm_selection(self.provider, self.model):

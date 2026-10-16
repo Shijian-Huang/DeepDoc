@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from evaluation.models import EvaluationModel, model_registry
 from llm.evaluator import (
     DEFAULT_PACKETS_PATH,
+    EVALUATION_PIPELINE_VERSION,
     EvidencePacket,
     EvaluationJudge,
     GeminiJudge,
@@ -27,7 +28,11 @@ from llm.evaluator import (
 )
 from parser.document_parser import SUPPORTED_EXTENSIONS, parse_document_pages
 from utils.section_extractor import build_summary_input_from_pages
-from utils.summary_prompt import SUMMARY_MODE_INSTRUCTIONS, normalize_summary_mode
+from utils.summary_prompt import (
+    SUMMARY_MODE_INSTRUCTIONS,
+    build_research_summary_prompt,
+    normalize_summary_mode,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -188,7 +193,14 @@ class DashboardEvaluator:
         *,
         force: bool,
     ) -> dict[str, Any]:
-        key = _cache_key(model.name, packet, summary_mode, getattr(model, "cache_identity", ""))
+        key = _cache_key(
+            model.name,
+            packet,
+            summary_mode,
+            _cache_identity(model),
+            _cache_identity(self.judge),
+            build_research_summary_prompt(packet.text, summary_mode),
+        )
         if not force:
             cached = self.store.get(key)
             if cached is not None:
@@ -255,9 +267,35 @@ def _validate_summary_mode(value: str) -> str:
     return normalize_summary_mode(value)
 
 
-def _cache_key(model_name: str, packet: EvidencePacket, summary_mode: str, identity: str) -> str:
+def _cache_identity(component: Any) -> str:
+    identity = getattr(component, "cache_identity", "")
+    if callable(identity):
+        identity = identity()
+    if identity:
+        return str(identity)
+    component_type = type(component)
+    return f"{component_type.__module__}.{component_type.__qualname__}"
+
+
+def _cache_key(
+    model_name: str,
+    packet: EvidencePacket,
+    summary_mode: str,
+    model_identity: str,
+    judge_identity: str = "",
+    summary_prompt: str = "",
+) -> str:
     value = json.dumps(
-        [model_name, summary_mode, packet.id, packet.text, identity],
+        [
+            EVALUATION_PIPELINE_VERSION,
+            model_name,
+            model_identity,
+            judge_identity,
+            summary_mode,
+            summary_prompt,
+            packet.id,
+            packet.text,
+        ],
         ensure_ascii=False,
         separators=(",", ":"),
     )
