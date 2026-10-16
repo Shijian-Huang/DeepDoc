@@ -2,15 +2,17 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from evaluation.dashboard import DashboardEvaluator, JsonResultStore, build_custom_packet
-from llm.evaluator import EvidencePacket
+from llm.evaluator import EvidencePacket, EvaluationError
 
 
 @dataclass
 class FakeModel:
     name: str
     calls: int = 0
+    cache_identity: str = "model-v1"
 
     def summarize(self, prompt):
         self.calls += 1
@@ -20,6 +22,7 @@ class FakeModel:
 class FakeJudge:
     def __init__(self):
         self.calls = 0
+        self.cache_identity = "judge-v1"
 
     def evaluate(self, summary, evidence_packet):
         self.calls += 1
@@ -48,6 +51,13 @@ class FailingModel:
 
     def summarize(self, _prompt):
         raise ValueError("invalid model output")
+
+
+class InvalidJudge:
+    cache_identity = "invalid-judge"
+
+    def evaluate(self, summary, evidence_packet):
+        return {}
 
 
 class DashboardEvaluatorTests(unittest.TestCase):
@@ -82,6 +92,40 @@ class DashboardEvaluatorTests(unittest.TestCase):
         result = self.dashboard.evaluate(
             ["Model A"], ["paper-a"], "paragraph", force=True
         )
+
+        self.assertFalse(result["results"][0]["cached"])
+        self.assertEqual(self.model_a.calls, 2)
+        self.assertEqual(self.judge.calls, 2)
+
+    def test_model_configuration_change_invalidates_cache(self):
+        self.dashboard.evaluate(["Model A"], ["paper-a"], "standard")
+        self.model_a.cache_identity = "model-v2"
+
+        result = self.dashboard.evaluate(["Model A"], ["paper-a"], "standard")
+
+        self.assertFalse(result["results"][0]["cached"])
+        self.assertEqual(self.model_a.calls, 2)
+        self.assertEqual(self.judge.calls, 2)
+
+    def test_judge_configuration_change_invalidates_cache(self):
+        self.dashboard.evaluate(["Model A"], ["paper-a"], "standard")
+        self.judge.cache_identity = "judge-v2"
+
+        result = self.dashboard.evaluate(["Model A"], ["paper-a"], "standard")
+
+        self.assertFalse(result["results"][0]["cached"])
+        self.assertEqual(self.model_a.calls, 2)
+        self.assertEqual(self.judge.calls, 2)
+
+    def test_summary_prompt_change_invalidates_cache(self):
+        self.dashboard.evaluate(["Model A"], ["paper-a"], "standard")
+        with patch(
+            "evaluation.dashboard.build_research_summary_prompt",
+            return_value="changed summary prompt",
+        ):
+            result = self.dashboard.evaluate(
+                ["Model A"], ["paper-a"], "standard"
+            )
 
         self.assertFalse(result["results"][0]["cached"])
         self.assertEqual(self.model_a.calls, 2)
@@ -149,6 +193,24 @@ class DashboardEvaluatorTests(unittest.TestCase):
             self.dashboard.evaluate(
                 ["Broken Model"], ["paper-a"], "standard"
             )
+
+    def test_invalid_judge_response_is_reported_in_comparisons(self):
+        self.dashboard.judge = InvalidJudge()
+
+        result = self.dashboard.evaluate(
+            ["Model A", "Model B"], ["paper-a"], "standard"
+        )
+
+        self.assertTrue(result["partial"])
+        self.assertEqual(result["error_count"], 2)
+        self.assertTrue(all("error" in row for row in result["results"]))
+        self.assertIn("judge response is incomplete", result["results"][0]["error"])
+
+    def test_invalid_judge_response_raises_for_a_single_pair(self):
+        self.dashboard.judge = InvalidJudge()
+
+        with self.assertRaisesRegex(EvaluationError, "judge response is incomplete"):
+            self.dashboard.evaluate(["Model A"], ["paper-a"], "standard")
 
     def test_text_upload_is_processed_into_an_evidence_packet(self):
         path = Path(self.temporary.name) / "reference.txt"
