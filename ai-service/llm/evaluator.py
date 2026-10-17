@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -50,6 +51,10 @@ SCORE_FIELDS = (
     "hallucination_score",
 )
 
+EVALUATION_PIPELINE_VERSION = "2"
+JUDGE_RESPONSE_MIME_TYPE = "application/json"
+JUDGE_TEMPERATURE = 0
+
 
 class GeminiJudge:
     """Gemini-backed judge; replace this class through dependency injection."""
@@ -64,6 +69,27 @@ class GeminiJudge:
         self.model = model or os.getenv("GEMINI_EVALUATOR_MODEL", "gemini-3.5-flash-lite")
         self._api_key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY")
         self._client = client
+
+    @property
+    def cache_identity(self) -> str:
+        """Identify every judge input that can affect a cached score."""
+        template = build_evaluation_prompt(
+            "__SUMMARY__",
+            EvidencePacket("__PACKET_ID__", "__EVIDENCE__"),
+        )
+        value = json.dumps(
+            {
+                "pipeline_version": EVALUATION_PIPELINE_VERSION,
+                "judge": f"{type(self).__module__}.{type(self).__qualname__}",
+                "model": self.model,
+                "prompt_template": template,
+                "response_mime_type": JUDGE_RESPONSE_MIME_TYPE,
+                "temperature": JUDGE_TEMPERATURE,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     def _get_client(self) -> Any:
         if self._client is not None:
@@ -91,8 +117,8 @@ class GeminiJudge:
                 model=self.model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0,
+                    response_mime_type=JUDGE_RESPONSE_MIME_TYPE,
+                    temperature=JUDGE_TEMPERATURE,
                 ),
             )
         except Exception as error:
@@ -323,26 +349,54 @@ def _extract_json(raw_text: str) -> str:
     return candidate[:end]
 
 
-def _nonnegative_int(value: Any) -> int:
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+def _required_fields(source: Mapping[str, Any], fields: set[str], path: str) -> None:
+    missing = fields - set(source)
+    unexpected = set(source) - fields
+    if missing:
+        raise EvaluationError(
+            f"The judge response is incomplete: {path} is missing "
+            f"{', '.join(sorted(missing))}."
+        )
+    if unexpected:
+        raise EvaluationError(
+            f"The judge response is malformed: {path} contains unexpected fields "
+            f"{', '.join(sorted(unexpected))}."
+        )
 
 
-def _missing_items(value: Any) -> list[str]:
+def _nonnegative_int(value: Any, path: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise EvaluationError(
+            f"The judge response is malformed: {path} must be a non-negative integer."
+        )
+    return value
+
+
+def _missing_items(value: Any, path: str) -> list[str]:
     if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
+        raise EvaluationError(
+            f"The judge response is malformed: {path} must be an array of strings."
+        )
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        raise EvaluationError(
+            f"The judge response is malformed: {path} must contain only non-empty strings."
+        )
+    return [item.strip() for item in value]
 
 
-def _normalize_dimension(value: Any) -> dict[str, Any]:
-    source = value if isinstance(value, Mapping) else {}
-    covered = _nonnegative_int(source.get("covered"))
-    partial = _nonnegative_int(source.get("partial_covered"))
-    missing = _missing_items(source.get("missing"))
-    minimum_expected = covered + partial + len(missing)
-    expected = max(_nonnegative_int(source.get("expected")), minimum_expected)
+def _normalize_dimension(value: Any, path: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise EvaluationError(f"The judge response is malformed: {path} must be an object.")
+    _required_fields(value, {"covered", "partial_covered", "expected", "missing"}, path)
+    covered = _nonnegative_int(value["covered"], f"{path}.covered")
+    partial = _nonnegative_int(value["partial_covered"], f"{path}.partial_covered")
+    expected = _nonnegative_int(value["expected"], f"{path}.expected")
+    missing = _missing_items(value["missing"], f"{path}.missing")
+    if covered + partial + len(missing) != expected:
+        raise EvaluationError(
+            f"The judge response is malformed: {path}.expected must equal covered, "
+            "partial_covered, and missing items combined."
+        )
     return {
         "covered": covered,
         "partial_covered": partial,
@@ -354,22 +408,49 @@ def _normalize_dimension(value: Any) -> dict[str, Any]:
 def _normalize_judgment(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise EvaluationError("The judge response must be a JSON object.")
+    _required_fields(
+        value,
+        {"key_ideas", "contributions", "hallucinated_claims", "total_summary_claims"},
+        "the root object",
+    )
+    raw_hallucinations = value["hallucinated_claims"]
+    if not isinstance(raw_hallucinations, list):
+        raise EvaluationError(
+            "The judge response is malformed: hallucinated_claims must be an array."
+        )
     hallucinations: list[dict[str, Any]] = []
-    raw_hallucinations = value.get("hallucinated_claims", [])
-    if isinstance(raw_hallucinations, list):
-        for item in raw_hallucinations:
-            if not isinstance(item, Mapping) or not str(item.get("claim") or "").strip():
-                continue
-            hallucinations.append({
-                "claim": str(item.get("claim")).strip(),
-                "reason": str(item.get("reason") or "Not supported by evidence packet").strip(),
-                "evidence": item.get("evidence"),
-            })
+    for index, item in enumerate(raw_hallucinations):
+        path = f"hallucinated_claims[{index}]"
+        if not isinstance(item, Mapping):
+            raise EvaluationError(f"The judge response is malformed: {path} must be an object.")
+        _required_fields(item, {"claim", "reason", "evidence"}, path)
+        claim = item["claim"]
+        reason = item["reason"]
+        if not isinstance(claim, str) or not claim.strip():
+            raise EvaluationError(
+                f"The judge response is malformed: {path}.claim must be a non-empty string."
+            )
+        if not isinstance(reason, str) or not reason.strip():
+            raise EvaluationError(
+                f"The judge response is malformed: {path}.reason must be a non-empty string."
+            )
+        hallucinations.append({
+            "claim": claim.strip(),
+            "reason": reason.strip(),
+            "evidence": item["evidence"],
+        })
+
+    total_claims = _nonnegative_int(value["total_summary_claims"], "total_summary_claims")
+    if total_claims < len(hallucinations):
+        raise EvaluationError(
+            "The judge response is malformed: total_summary_claims cannot be smaller "
+            "than the hallucinated claim count."
+        )
     return {
-        "key_ideas": _normalize_dimension(value.get("key_ideas")),
-        "contributions": _normalize_dimension(value.get("contributions")),
+        "key_ideas": _normalize_dimension(value["key_ideas"], "key_ideas"),
+        "contributions": _normalize_dimension(value["contributions"], "contributions"),
         "hallucinated_claims": hallucinations,
-        "total_summary_claims": _nonnegative_int(value.get("total_summary_claims")),
+        "total_summary_claims": total_claims,
     }
 
 
