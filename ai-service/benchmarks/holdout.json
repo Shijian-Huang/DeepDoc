@@ -1,0 +1,331 @@
+{
+  "name": "holdout",
+  "purpose": "Holdout set: only for final validation before merging major changes or releasing. Do not inspect outputs, tune prompts on, or show these papers to an AI assistant during development.",
+  "created": "2026-10-21",
+  "summary_mode": "standard",
+  "aclsum": {
+    "dataset": "sobamchan/aclsum",
+    "revision": "08c2433baa76b4a3797a28311d8ffddb98e037e3",
+    "split": "test",
+    "license": "MIT"
+  },
+  "papers": [
+    {
+      "id": "acl:2022.naacl-main.394",
+      "source": "acl_anthology",
+      "title": "When Does Syntax Mediate Neural Language Model Performance? Evidence from Dropout Probes",
+      "pdf_url": "https://aclanthology.org/2022.naacl-main.394.pdf",
+      "sha256": "f7a7484f23e0a207c2c303a94097e2c3ac7468214e6740a4b38d6d6ea64ee06a",
+      "page_count": 16,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Redundant encodings of syntactic information can make existing probing techniques for causal use of syntactic knowledge by language models provide misleading false negative results.",
+        "approach": "They first show that models redundantly encode information and propose a dropout-based probing technique that considers all syntactic information in embeddings.",
+        "outcome": "They find evidence of models using syntactic information not identified by previous methods by using the proposed technique and further improve the QA model's performance.",
+        "source_sentences": {
+          "challenge": [
+            "Recent causal probing literature reveals when language models and syntactic probes use similar representations .",
+            "Such techniques may yield \" false negative \" causality results : models may use representations of syntax , but probes may have learned to use redundant encodings of the same syntactic information .",
+            "Here , we identify a limitation of prior causal probing art in which redundant information in embeddings could lead to probes and models using different representations of the same information , which in turn could lead to uninformative causal analysis results .",
+            "Unfortunately , negative results -wherein researchers report that models do not appear to use a property causally -are difficult to interpret .",
+            "Such failures can be attributed to a model truly not using the property ( true negatives ) , or to a failure of the technique ( false negatives ) .",
+            "For example , as depicted in Figure 1 , if a language model encodes syntactic information redundantly ( here illustrated in two-dimensions ) , the model and probe may differentiate among parses along orthogonal dimensions .",
+            "When creating counterfactual representations with such probes , researchers could incorrectly conclude that the model does not use syntactic information ."
+          ],
+          "approach": [
+            "We demonstrate that models do encode syntactic information redundantly and introduce a new probe design that guides probes to consider all syntactic information present in embeddings .",
+            "We propose a new probe architecture that addresses this limitation by encouraging probes to use all sources of information in embeddings .",
+            "In this work , we present new evidence for the causal use of syntactic representations on task performance in BERT , using newly-designed probes that take into account the potential redundancy in a model 's internal representation .",
+            "First , we find evidence for representational redundancy in BERTbased models .",
+            "Based on these findings , we propose a new probe design that encourages the probe to use all relevant representations of syntax in model embeddings .",
+            "In this work , we designed and evaluated \" dropout probes , \" a new neural probing architecture for generating useful causal analysis of trained language models .",
+            "Our technical contribution -adding a dropout layer before probes -was inspired by a theory of redundant syntactic encodings in models ."
+          ],
+          "outcome": [
+            "Using these probes , we find evidence for the use of syntax in models where prior methods did not , allowing us to boost model performance by injecting syntactic information into representations .",
+            "These probes are then used to assess if language models use representations of syntax causally , and , unlike prior art , we find that some fine-tuned models do exhibit signatures of causal use of syntactic information .",
+            "Lastly , having found that these models causally use representations of syntax , we used our probes to boost a questionanswering model 's performance by \" injecting \" syntactic information at test time.1 2 Related Work",
+            "Our results fit within three categories : we showed that 1 ) models encoded syntactic information redundantly , 2 ) dropout probes , unlike standard probes , revealed that QA models used syntactic representations causally , and 3 ) by injecting syntactic information at test time in syntacticallychallenging domains , we could increase model performance without retraining ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:E17-1004",
+      "source": "acl_anthology",
+      "title": "Classifying Illegal Activities on Tor Network Based on Web Textual Contents",
+      "pdf_url": "https://aclanthology.org/E17-1004.pdf",
+      "sha256": "acbee6b1d87d5172fcd2855574dcf3043454f4f5cb24a03bf41459ee47d9c6b6",
+      "page_count": 9,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Darknet which is a sub-network of the World Wide Web with an additional layer of anonymity, is often associated with illegal activities.",
+        "approach": "They present a dataset of samples of the Tor network over two months manually labelled into 26 classes and evaluate existing text classification methods.",
+        "outcome": "They find that the Logistic Regression classifier with TF-IDF representations achieves 96.6% accuracy however it also suffers from overtting for some classes.",
+        "source_sentences": {
+          "challenge": [
+            "The Darknet , which is also known as Dark Web , is a subset of the Deep Web .",
+            "It is not only not indexed and isolated , but also requires a specific software or a dedicated proxy server to access it .",
+            "The Darknet works over a virtual sub-network of the World Wide Web ( WWW ) that provides an additional layer of anonymity for the network users .",
+            "The Darknet is often associated with illegal activities ."
+          ],
+          "approach": [
+            "In this paper , we present and make publicly available 1 a new dataset for Darknet active domains , which we call it \" Darknet Usage Text Addresses \" ( DUTA ) .",
+            "We built DUTA by sampling the Tor network during two months and manually labeled each address into 26 classes .",
+            "Using DUTA , we conducted a comparison between two well-known text representation techniques crossed by three different supervised classifiers to categorize the Tor hidden services .",
+            "Motivated by the critical buried contents on the Darknet and its high abuse , we focused our research in designing and building a system that classifies the illegitimate practices on Darknet .",
+            "In this paper , we present the first publicly available dataset called \" Darknet Usage Text Addresses \" ( DUTA ) that is extracted from the Tor HS Darknet .",
+            "DUTA contains 26 categories that cover all the legal and the illegal activities monitored on Darknet during our sampling period .",
+            "In order to achieve our target , we designed and compared different combinations of some of the most wellknown text classification techniques by identifying the key stages that have a high influence on the method performance .",
+            "In this paper , we have categorized illegal activities of Tor HS by using two text representation methods , TF-IDF and BOW , combined with three classifiers , SVM , LR , and NB .",
+            "To support the classification pipelines , we built the dataset DUTA , We found that the combination of the TF-IDF text representation with the Logistic Regression classifier can achieve 96.6 % accuracy over 10 folds of cross-validation and 93.7 % macro F1 score ."
+          ],
+          "outcome": [
+            "We found that the combination of TF-IDF words representation with Logistic Regression classifier achieves 96.6 % of 10 folds cross-validation accuracy and a macro F1 score of 93.7 % when classifying a subset of illegal activities from DUTA .",
+            "To support the classification pipelines , we built the dataset DUTA , We found that the combination of the TF-IDF text representation with the Logistic Regression classifier can achieve 96.6 % accuracy over 10 folds of cross-validation and 93.7 % macro F1 score .",
+            "We noticed that our classifier suffers from overfitting due to the difficulty of reaching more samples of onion hidden services for some classes like counterfeiting personal identification or illegal drugs ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:P16-1057",
+      "source": "acl_anthology",
+      "title": "Latent Predictor Networks for Code Generation",
+      "pdf_url": "https://aclanthology.org/P16-1057.pdf",
+      "sha256": "854d28235744e8b7b768b864f70ba7f7486db4d7a97a1d36cbf2b5b10b9fad81",
+      "page_count": 11,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "While using a single predictor puts limitations on generation tasks, training multiple predictors remains challenging because of a lack of suitable annotated data.",
+        "approach": "They propose a neural network architecture that allows to incorporation arbitary number of input functions enabling flexibility in conditioning text and the granularity of generation.",
+        "outcome": "Evaluation of existing benchmarks and the newly created card game-based dataset shows that the proposed model with multiple predictors outperforms strong baseline models.",
+        "source_sentences": {
+          "challenge": [
+            "Using this framework , we address the problem of generating programming code from a mixed natural language and structured specification .",
+            "Most models take the restrictive approach of employing a single predictor , such as a word softmax , to predict all tokens of the output sequence .",
+            "However , training multiple predictors is in itself a challenging task , as no annotation exists regarding the predictor used to generate each output token ."
+          ],
+          "approach": [
+            "We present a novel neural network architecture which generates an output sequence conditioned on an arbitrary number of input functions .",
+            "Crucially , our approach allows both the choice of conditioning context and the granularity of generation , for example characters or tokens , to be marginalised , thus permitting scalable and effective training .",
+            "We create two new data sets for this paradigm derived from the collectible trading card games Magic the Gathering and Hearthstone .",
+            "We introduced a neural network architecture named Latent Prediction Network , which allows efficient marginalization over multiple predictors .",
+            "Under this architecture , we propose a generative model for code generation that combines a character level softmax to generate language-specific tokens and multiple pointer networks to copy keywords from the input ."
+          ],
+          "outcome": [
+            "On these , and a third preexisting corpus , we demonstrate that marginalising multiple predictors allows our model to outperform strong benchmarks .",
+            "Along with other extensions , namely structured attention and code compression , our model is applied on on both existing datasets and also on a newly created one with implementations of TCG game cards .",
+            "Our experiments show that our model out-performs multiple benchmarks , which demonstrate the importance of combining different types of predictors ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:N19-1221",
+      "source": "acl_anthology",
+      "title": "Abusive Language Detection with Graph Convolutional Networks",
+      "pdf_url": "https://aclanthology.org/N19-1221.pdf",
+      "sha256": "9bdfb449441b9e323944f8ff9ccbcee0cb9dff13c3a23dec349201d4407fff80",
+      "page_count": 6,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Existing approaches to abusive language detection in Twitter only capture shallow follower-following relationships to model homophily by a node embedding framework without considering linguistic behavior.",
+        "approach": "They propose a graph convolutional network-based approach which captures the community structure linguistic behaviors by representing it as a heterogeneous graph of authors and tweets.",
+        "outcome": "The proposed model outperforms the current state-of-the-art techniques in abusive language detection.",
+        "source_sentences": {
+          "challenge": [
+            "Previous research on automated abusive language detection in Twitter has shown that communitybased profiling of users is a promising technique for this task .",
+            "However , existing approaches only capture shallow properties of online communities by modeling followerfollowing relationships .",
+            "To model homophily , recent research in abusive language detection on Twitter ( Mishra et al . , 2018a ) incorporates embeddings for authors ( i.e. , users who have composed tweets ) that encode the structure of their surrounding communities .",
+            "The embeddings ( called author profiles ) are generated by applying a node embedding framework to an undirected unlabeled community graph where nodes denote the authors and edges the follower-following relationships amongst them on Twitter .",
+            "However , these profiles do not capture the linguistic behavior of the authors and their communities and do not convey whether their tweets tend to be abusive or not ."
+          ],
+          "approach": [
+            "In contrast , working with graph convolutional networks ( GCNs ) , we present the first approach that captures not only the structure of online communities but also the linguistic behavior of the users within them .",
+            "In contrast , we represent the community of authors as a heterogeneous graph consisting of two types of nodes , authors and their tweets , rather than a homogeneous community graph of authors only .",
+            "The primary advantage of such heterogeneous representations is that they enable us to model both community structure as well as the linguistic behavior of authors in these communities .",
+            "We proposed an approach based on graph convolutional networks to show that author profiles that directly capture the linguistic behavior of authors along with the structural traits of their community significantly advance the current state of the art ."
+          ],
+          "outcome": [
+            "We show that such a heterogeneous graph-structured modeling of communities significantly advances the current state of the art in abusive language detection .",
+            "We demonstrate that our methods provide significant improvements over existing techniques .",
+            "We proposed an approach based on graph convolutional networks to show that author profiles that directly capture the linguistic behavior of authors along with the structural traits of their community significantly advance the current state of the art ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:2022.naacl-main.192",
+      "source": "acl_anthology",
+      "title": "Necessity and Sufficiency for Explaining Text Classifiers: A Case Study in Hate Speech Detection",
+      "pdf_url": "https://aclanthology.org/2022.naacl-main.192.pdf",
+      "sha256": "48dd0c715103a9b9adc73f66a3890d1982a9ec7ee7bfa2e6218a3915b9d8426b",
+      "page_count": 15,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Feature attribution methods are used for local explanation but provided scores are not always clear on how to interpret the assigned importance in operational terms.",
+        "approach": "They propose a feature attribution method for text classifiers which computes necessity and sufficiency metrics coupled with a generative model-based explicit text perturbation method.",
+        "outcome": "Experiments with different hate speech detection models towards identity-based groups show that the proposed method can explain the classifier's behaviour on non-hateful statements.",
+        "source_sentences": {
+          "challenge": [
+            "A popular class of local explanation techniques is feature attribution methods , where the aim is to provide scores for each feature according to how important that feature is for the classifier decision for a given input .",
+            "From an intuitive perspective , one issue with feature attribution scores is that it is not always clear how to interpret the assigned importance in operational terms .",
+            "We argue that standard token importance metrics can be ambiguous in terms of what ' importance ' means ."
+          ],
+          "approach": [
+            "We present a novel feature attribution method for explaining text classifiers , and analyze it in the context of hate speech detection .",
+            "Although feature attribution models usually provide a single importance score for each token , we instead provide two complementary and theoreticallygrounded scores -necessity and sufficiencyresulting in more informative explanations .",
+            "We propose a transparent method that calculates these values by generating explicit perturbations of the input text , allowing the importance scores themselves to be explainable .",
+            "In this paper , we develop a method to estimate the necessity and sufficiency of each word in the input , as explanations for a binary text classifier 's decisions .",
+            "It also provides an additional layer of transparency to the user , so they can decide whether to trust the explanation by checking how reasonable the perturbed examples seem .",
+            "• We present the first methodology for calculating necessity and sufficiency metrics for text data as a feature attribution method .",
+            "• We use a generative model for producing input perturbations to avoid the out-of-distribution prediction issues that emerge with token deletion and masking techniques .",
+            "Instead , we adapt the theoretically-grounded concepts of necessity and sufficiency to explain text classifiers .",
+            "Besides being more informative , the process of generating these two metrics is intuitive and can be explained to lay people in terms of \" how much the perturbations in input change the output of the classifier \" .",
+            "Moreover , the input perturbations can be presented to the users , leading to a transparent and understandable explainability framework .",
+            "Considering the complexities of perturbing textual features , we introduced a practical implementation to compute the necessity and sufficiency of the input tokens ."
+          ],
+          "outcome": [
+            "We employ our method to explain the predictions of different hate speech detection models on the same set of curated examples from a test suite , and show that different values of necessity and sufficiency for identity terms correspond to different kinds of false positive errors , exposing sources of classifier bias against marginalized groups .",
+            "We apply our explainability metrics to test classifiers ' fairness towards identity-based groups ( e.g. , women , Muslims ) .",
+            "We show how necessity and sufficiency metrics calculated for identity terms over hateful sentences can explain the classifier 's behaviour on non-hateful statements , highlighting classifiers ' tendencies to over-rely on the presence of identity terms or to ignore the characteristics of the object of abuse ( e.g. , protected identity groups vs. non-human entities ) .",
+            "• To evaluate the new methodology , we apply it to the task of explaining hate speech classification , and demonstrate that it can detect and explain biases in hate speech classifiers .",
+            "Taking hate speech detection as an example application , we showed that sufficiency and necessity can be used to explain the expected differences between a classifier that is intended to detect identity-based hate speech and those trained for detecting general abuse ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:2020.aacl-main.67",
+      "source": "acl_anthology",
+      "title": "Neural RST-based Evaluation of Discourse Coherence",
+      "pdf_url": "https://aclanthology.org/2020.aacl-main.67.pdf",
+      "sha256": "dac0aecad48e33dfa1effbd7e22548e439542a92ee075df91d6093106164381b",
+      "page_count": 8,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Existing methods for discourse coherence are either based on explicit representations from the Centering Theory or deep learning approaches without hand-crafted linguistic features.",
+        "approach": "They propose a tree-recursive neural model with silver-standard RST features based on a hypothesis that low or high coherence adheres to different discourse structures.",
+        "outcome": "The proposed model is competitive with the state-of-the-art model while having 62% fewer parameters and further boosts are achieved when ensembled with it.",
+        "source_sentences": {
+          "challenge": [
+            "Discourse coherence has been the subject of much research in Computational Linguistics thanks to its widespread applications ( Lai and Tetreault , 2018 ) .",
+            "Most current methods can be described as either stemming from explicit representations based on the Centering Theory ( Grosz et al . , 1994 ) , or deep learning approaches that learn without the use of hand-crafted linguistic features ."
+          ],
+          "approach": [
+            "We demonstrate this through our tree-recursive neural model , namely RST-Recursive , which takes advantage of the text 's RST features produced by a state of the art RST parser .",
+            "Our work explores a third research avenue based on the Rhetorical Structure Theory ( RST ) ( Mann and Thompson , 1988 ) .",
+            "We hypothesize that texts of low / high coherence tend to adhere to different discourse structures .",
+            "Thus , we pose that using even silver-standard RST features should help in separating coherent texts from incoherent ones .",
+            "In this paper , we explore the usefulness of silverstandard parsed RST features in neural coherence classification ."
+          ],
+          "outcome": [
+            "We evaluate our approach on the Grammarly Corpus for Discourse Coherence ( GCDC ) and show that when ensembled with the current state of the art , we can achieve the new state of the art accuracy on this benchmark .",
+            "Furthermore , when deployed alone , RST-Recursive achieves competitive accuracy while having 62 % fewer parameters .",
+            "The former achieves reasonably good performance , only 2 % short of state of the art , while more robust with 62 % fewer parameters ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:P19-1184",
+      "source": "acl_anthology",
+      "title": "The PhotoBook Dataset: Building Common Ground through Visually-Grounded Dialogue",
+      "pdf_url": "https://aclanthology.org/P19-1184.pdf",
+      "sha256": "2323990cb14cee304551628661c6a199635853a07c570d78290e781ffd061c4b",
+      "page_count": 16,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Existing computational agents for visually grounded dialogue fail to produce consistent outputs because of models' inability to effectively utilise dialogue history.",
+        "approach": "They present a collection of visually-grounded, task-oriented dialogue in English from a collaborative game with two online participants and a baseline model for reference resolution.",
+        "outcome": "Their experiments on the proposed dataset and model show that shared information accumulated in a reference chain is important to resolve later descriptions.",
+        "source_sentences": {
+          "challenge": [
+            "The past few years have seen an increasing interest in developing computational agents for visually grounded dialogue , the task of using natural language to communicate about visual content in a multi-agent setup .",
+            "The models developed for this task often focus on specific aspects such as image labelling ( Mao et al . , 2016 ; Vedantam et al . , 2017 ) , object reference ( Kazemzadeh et al . , 2014 ; De Vries et al . , 2017a ) , visual question answering ( Antol et al . , 2015 ) , and first attempts of visual dialogue proper ( Das et al . , 2017 ) , but fail to produce consistent outputs over a conversation .",
+            "We hypothesise that one of the main reasons for this shortcoming is the models ' inability to effectively utilise dialogue history ."
+          ],
+          "approach": [
+            "This paper introduces the PhotoBook dataset , a large-scale collection of visually-grounded , task-oriented dialogues in English designed to investigate shared dialogue history accumulating during conversation .",
+            "Taking inspiration from seminal work on dialogue analysis , we propose a data-collection task formulated as a collaborative game prompting two online participants to refer to images utilising both their visual context as well as previously established referring expressions .",
+            "To further illustrate the novel features of the dataset , we propose a baseline model for reference resolution which uses a simple method to take into account shared information accumulated in a reference chain .",
+            "To facilitate progress towards more consistent and effective conversation models , we introduce the PhotoBook dataset : a large collection of 2,500 human-human goal-oriented English conversations between two participants , who are asked to identify shared images in their respective photo books by exchanging messages via written chat .",
+            "Over the five rounds of a game , a selection of previously displayed images will be visible again , prompting participants to re-refer to images utilising both their visual context as well as previously established referring expressions .",
+            "In addition , to showcase how the new dataset may be exploited for computational modelling , we propose a reference resolution baseline model trained to identify target images being discussed in a given dialogue segment .",
+            "The model uses a simple method to take into account information accumulated in a reference chain .",
+            "We have presented the first large-scale dataset of goal-oriented , visually grounded dialogues for investigating shared linguistic history .",
+            "Through the data collection 's task setup , participants repeatedly refer to a controlled set of target images , which allows them to improve task efficiency if they utilise their developing common ground and establish conceptual pacts ( Brennan and Clark , 1996 ) on referring expressions .",
+            "To illustrate the potential of the dataset , we trained a baseline reference resolution model and showed that information accumulated over a reference chain helps to resolve later descriptions ."
+          ],
+          "outcome": [
+            "To further illustrate the novel features of the dataset , we propose a baseline model for reference resolution which uses a simple method to take into account shared information accumulated in a reference chain .",
+            "Our results show that this information is particularly important to resolve later descriptions and underline the need to develop more sophisticated models of common ground in dialogue interaction .",
+            "The model uses a simple method to take into account information accumulated in a reference chain .",
+            "Our results show that this information is particularly important to resolve later descriptions and highlight the importance of developing more sophisticated models of common ground in dialogue interaction .",
+            "Our results suggest that more sophisticated models are needed to fully exploit shared linguistic history ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:P18-1034",
+      "source": "acl_anthology",
+      "title": "Semantic Parsing with Syntax- and Table-Aware SQL Generation",
+      "pdf_url": "https://aclanthology.org/P18-1034.pdf",
+      "sha256": "68ab5613a27a4dc5908da6dbef73a98eb5947002ecb10a5b38eadeae834f6ad3",
+      "page_count": 12,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Because existing text-to-SQL models generate queries word-by-word, they are often not executable due to the mismatch between question words and column names.",
+        "approach": "They propose pointer network-based methods which can take the structure of the table and SQL syntax into account.",
+        "outcome": "The proposed model significantly outperforms existing models in execution accuracy and logical form accuracy on the WikiSQL dataset.",
+        "source_sentences": {
+          "challenge": [
+            "Existing neural network based approaches typically generate a SQL query wordby-word , however , a large portion of the generated results is incorrect or not executable due to the mismatch between question words and table contents .",
+            "However , a large portion of generated results is incorrect or not executable due to the mismatch between question words and column names ( or cells ) ."
+          ],
+          "approach": [
+            "We present a generative model to map natural language questions into SQL queries .",
+            "Our approach addresses this problem by considering the structure of table and the syntax of SQL language .",
+            "We focus on semantic parsing that maps natural language utterances to executable programs ( Zelle and Mooney , 1996 ; Wong and Mooney , 2007 ; Zettlemoyer and Collins , 2007 ; Kwiatkowski et al . , 2011 ; Pasupat and Liang , 2015 ; Iyer et al . , 2017 ; Iyyer et al . , 2017 ) .",
+            "In this work , we regard SQL as the programming language , which could be executed on a table or a relational database to obtain an outcome .",
+            "To address the aforementioned problem , we present a generative semantic parser that considers the structure of table and the syntax of SQL language .",
+            "Our approach is based on pointer networks , which encodes the question into continuous vectors , and synthesizes the SQL query with three channels .",
+            "In this work , we develop STAMP , a Syntax-and Table-Aware seMantic Parser that automatically maps natural language questions to SQL queries , which could be executed on web table or relational dataset to get the answer .",
+            "STAMP has three channels , and it learns to switch to which channel at each time step ."
+          ],
+          "outcome": [
+            "The quality of the generated SQL query is significantly improved through ( 1 ) learning to replicate content from column names , cells or SQL keywords ; and ( 2 ) improving the generation of WHERE clause by leveraging the column-cell relation .",
+            "Experiments are conducted on WikiSQL , a recently released dataset with the largest question-SQL pairs .",
+            "Our approach significantly improves the state-of-the-art execution accuracy from 69.0 % to 74.4 % .",
+            "We conduct experiments on WikiSQL .",
+            "Results show that our approach outperforms existing systems , improving state-of-the-art execution accuracy to 74.4 % and logical form accuracy to 60.7 % .",
+            "Experiments are conducted on the WikiSQL dataset .",
+            "Results show that STAMP achieves the new state-of-the-art performance on WikiSQL ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "arxiv:2610.28518v1",
+      "source": "arxiv",
+      "category": "astro-ph.EP",
+      "title": "Two Validated Planets and 179 Candidates From a TESS Faint Star Transit Search in the ULTRASAT Fields",
+      "pdf_url": "https://arxiv.org/pdf/2610.28518v1",
+      "sha256": "dc4989a61966584f82c92a57293406c642bdf9cbf9ef84be713bde8e3132b4d4",
+      "page_count": 16,
+      "license": "per arXiv listing; PDF is downloaded, not redistributed"
+    },
+    {
+      "id": "arxiv:2610.28426v1",
+      "source": "arxiv",
+      "category": "cond-mat.mes-hall",
+      "title": "Grain-Boundary Scattering between Chiral Domains in Chiral Topological Semimetal CoSi",
+      "pdf_url": "https://arxiv.org/pdf/2610.28426v1",
+      "sha256": "1e3e4e87c29f1785f276d264ee52ae34a85de5fec7f3be94562cfac6d6ba0798",
+      "page_count": 17,
+      "license": "per arXiv listing; PDF is downloaded, not redistributed"
+    }
+  ]
+}
