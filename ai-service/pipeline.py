@@ -1,6 +1,6 @@
 import time
 
-from llm.summarizer import normalize_summary_mode, summarize_research_paper
+from llm.summarizer import active_llm_model, active_llm_provider, normalize_summary_mode, summarize_research_paper
 from parser.document_parser import extract_document_title, parse_document_pages
 from parser.reference_extractor import extract_references_with_diagnostics
 from utils.section_extractor import build_summary_input_from_pages
@@ -8,7 +8,11 @@ from utils.section_extractor import build_summary_input_from_pages
 def run_pipeline(file_path: str, summary_mode: str = "standard"):
     normalized_mode = normalize_summary_mode(summary_mode)
     started = time.perf_counter()
-    diagnostics = {"stage_seconds": {}}
+    diagnostics = {
+        "llm_provider": active_llm_provider(),
+        "llm_model": active_llm_model(),
+        "stage_seconds": {},
+    }
 
     pages = parse_document_pages(file_path)
     paper_title = extract_document_title(file_path, pages)

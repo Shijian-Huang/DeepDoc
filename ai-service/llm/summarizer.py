@@ -235,10 +235,15 @@ def extract_json(raw_text: str) -> str:
 
     return cleaned
 
+class LLMProviderError(json.JSONDecodeError):
+    """A provider/API failure, raised as a JSONDecodeError so existing retry and fallback handling still applies."""
+
+
 def generate_json(prompt: str, schema: Optional[dict] = None):
     require_llm_configuration()
     check_analysis_cancelled()
     last_raw_text = ""
+    provider_failed = False
 
     provider = active_llm_provider()
     models = [active_llm_model()]
@@ -252,6 +257,7 @@ def generate_json(prompt: str, schema: Optional[dict] = None):
             raise
         except RuntimeError as error:
             last_raw_text = str(error)
+            provider_failed = True
             continue
         cleaned = extract_json(raw_text)
 
@@ -259,8 +265,15 @@ def generate_json(prompt: str, schema: Optional[dict] = None):
             return json.loads(cleaned)
         except json.JSONDecodeError:
             last_raw_text = raw_text
+            provider_failed = False
 
+    if provider_failed:
+        raise LLMProviderError("LLM provider request failed", last_raw_text, 0)
     raise json.JSONDecodeError("Could not parse model response as JSON", last_raw_text, 0)
+
+
+def _json_failure_reason(error: json.JSONDecodeError) -> str:
+    return "provider_error" if isinstance(error, LLMProviderError) else "invalid_json"
 
 def summarize_chunk(chunk: str):
     prompt = f"""
@@ -724,7 +737,10 @@ def build_fact_extraction_prompt(evidence_packet: str, compact: bool = False) ->
 def normalize_verified_facts(result: dict, evidence_sources: list[dict], diagnostics: Optional[dict] = None) -> list[dict]:
     sources = _source_map(evidence_sources)
     verified: list[dict] = []
-    for item in result.get("facts", []) if isinstance(result, dict) else []:
+    raw_facts = result.get("facts") if isinstance(result, dict) else None
+    if not isinstance(raw_facts, list):
+        raw_facts = []
+    for item in raw_facts:
         if not isinstance(item, dict):
             continue
         fact = re.sub(r"\s+", " ", str(item.get("fact") or "")).strip()
@@ -757,7 +773,7 @@ def normalize_verified_facts(result: dict, evidence_sources: list[dict], diagnos
         fact["fact_id"] = f"fact_{index:02d}"
     if diagnostics is not None:
         diagnostics.update({
-            "generated_fact_count": len(result.get("facts", [])),
+            "generated_fact_count": len(raw_facts),
             "accepted_generated_fact_count": accepted_count,
             "source_supplement_count": len(verified) - accepted_count,
             "verified_fact_count": len(verified),
@@ -986,11 +1002,13 @@ def supplement_short_summary(result: dict, verified_facts: list[dict], summary_m
 def extract_verified_facts(evidence_packet: str, evidence_sources: list[dict], diagnostics: Optional[dict] = None) -> list[dict]:
     if diagnostics is not None:
         diagnostics["compact_retry"] = False
+        diagnostics["compact_retry_reason"] = None
     try:
         raw_facts = generate_json(build_fact_extraction_prompt(evidence_packet), schema=FACT_EXTRACTION_SCHEMA)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as error:
         if diagnostics is not None:
             diagnostics["compact_retry"] = True
+            diagnostics["compact_retry_reason"] = _json_failure_reason(error)
         check_analysis_cancelled()
         raw_facts = generate_json(
             build_fact_extraction_prompt(evidence_packet, compact=True),
@@ -1131,7 +1149,7 @@ def summarize_research_paper(
 ):
     normalized_mode = normalize_summary_mode(summary_mode)
     sources = evidence_sources or []
-    diagnostics: dict[str, Any] = {"stage_seconds": {}, "filtered_sentences": []}
+    diagnostics: dict[str, Any] = {"stage_seconds": {}, "checked_sentence_count": 0, "filtered_sentences": []}
     started_at = time.perf_counter()
 
     try:
