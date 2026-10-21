@@ -25,7 +25,7 @@ api_key = os.getenv("GEMINI_API_KEY")
 gemini_provider = GeminiProvider(api_key)
 client = gemini_provider.client
 
-gemini_models = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite"]
+gemini_models = ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite", "gemini-3.5-flash-lite"]
 llm_provider = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
 ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 ollama_models = [

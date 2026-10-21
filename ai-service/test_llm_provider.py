@@ -296,6 +296,31 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(summarizer.active_llm_provider(), original_provider)
         self.assertEqual(summarizer.active_llm_model(), original_model)
 
+    def test_gemini_3_5_flash_lite_is_selectable_without_changing_default(self):
+        with (
+            patch.object(summarizer, "llm_provider", "gemini"),
+            patch.object(summarizer, "api_key", "test"),
+            patch.object(summarizer, "_ollama_provider") as ollama_provider,
+        ):
+            ollama_provider.return_value.installed_models.return_value = set()
+            self.assertEqual(summarizer.active_llm_model(), "gemini-3.1-flash-lite-preview")
+            options = {option["model"]: option for option in summarizer.llm_options()}
+            self.assertTrue(options["gemini-3.5-flash-lite"]["available"])
+            with summarizer.use_llm_selection("gemini", "gemini-3.5-flash-lite") as selection:
+                self.assertEqual(selection, ("gemini", "gemini-3.5-flash-lite"))
+                self.assertEqual(summarizer.active_llm_model(), "gemini-3.5-flash-lite")
+            self.assertEqual(summarizer.active_llm_model(), "gemini-3.1-flash-lite-preview")
+
+    def test_unregistered_gemini_model_is_rejected(self):
+        with (
+            patch.object(summarizer, "api_key", "test"),
+            patch.object(summarizer, "_ollama_provider") as ollama_provider,
+        ):
+            ollama_provider.return_value.installed_models.return_value = set()
+            with self.assertRaisesRegex(ValueError, "Unknown LLM provider or model"):
+                with summarizer.use_llm_selection("gemini", "gemini-unknown"):
+                    pass
+
 
 if __name__ == "__main__":
     unittest.main()
