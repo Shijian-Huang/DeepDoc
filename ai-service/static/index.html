@@ -348,7 +348,6 @@
               <div class="video-script-header">
                 <div>
                   <h3>Slides</h3>
-                  <p class="result-meta">Generate a slide outline, then optionally create a narrated MP4.</p>
                 </div>
               </div>
               <div class="video-control-bar">
@@ -368,11 +367,11 @@
                   <p class="stage-label">Export</p>
                   <div class="artifact-state-strip" aria-label="Slides and MP4 status">
                     <span class="artifact-state" data-field="slidesState">Slides not generated</span>
-                    <span class="artifact-state" data-field="mp4State">MP4 not generated</span>
+                    <span class="artifact-state" data-field="mp4State" hidden>MP4 not generated</span>
                   </div>
                   <div class="video-actions">
                     <button class="primary-button compact-action" type="button" data-field="generateVideoScript">Generate Slides</button>
-                    <button class="ghost-button compact-action" type="button" data-field="generateVideo">Generate Narrated MP4</button>
+                    <button class="ghost-button compact-action" type="button" data-field="generateVideo" hidden>Generate Narrated MP4</button>
                   </div>
                 </div>
               </div>

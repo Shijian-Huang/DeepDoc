@@ -1,4 +1,5 @@
 const uploadForm = document.querySelector("#uploadForm");
+let videoEnabled = false;
 const uploadDropZone = document.querySelector("#uploadDropZone");
 const pdfFileInput = document.querySelector("#pdfFile");
 const fileLabel = document.querySelector("#fileLabel");
@@ -596,6 +597,8 @@ async function initAuth() {
   try {
     const response = await fetch("/auth/config");
     const config = await response.json();
+    videoEnabled = config.video_enabled === true;
+    updateVideoArtifactAvailability(resultPanel);
     authState.enabled = Boolean(config.enabled);
     authBox.hidden = !authState.enabled;
     if (!authState.enabled) {
@@ -1607,6 +1610,7 @@ function handleResultPanelClick(event) {
     generateVideoScript(analysisId, videoContainer, scriptButton, slideCountControl, downloadScriptLink, downloadVideoLink, downloadSlidesLink, downloadSlidesHtmlLink);
   }
   if (videoButton) {
+    if (!videoEnabled) return;
     generateVideo(analysisId, videoContainer, videoStatus, downloadVideoLink, videoButton, slideCountControl);
   }
 }
@@ -2769,6 +2773,8 @@ function updateVideoArtifactAvailability(root, options = {}) {
   const videoSlides = Number(downloadVideoLink?.dataset.slideCount || 0);
   const selectedScriptReady = scriptSlides && scriptSlides === selectedSlideCount;
   const selectedVideoReady = videoSlides && videoSlides === selectedSlideCount && selectedScriptReady;
+  if (videoButton) videoButton.hidden = !videoEnabled;
+  if (mp4State) mp4State.hidden = !videoEnabled && !videoSlides;
 
   if (downloadScriptLink) {
     downloadScriptLink.hidden = !selectedScriptReady;
@@ -2780,7 +2786,7 @@ function updateVideoArtifactAvailability(root, options = {}) {
     downloadSlidesHtmlLink.hidden = !selectedScriptReady;
   }
   if (downloadVideoLink) {
-    downloadVideoLink.hidden = !selectedVideoReady;
+    downloadVideoLink.hidden = videoEnabled ? !selectedVideoReady : !videoSlides;
   }
 
   if (selectedScriptReady) {
@@ -2817,9 +2823,9 @@ function updateVideoArtifactAvailability(root, options = {}) {
   } else if (statusContainer && selectedVideoReady) {
     statusContainer.textContent = `Generated ${videoSlides}-slide video at ${formatDate(downloadVideoLink.dataset.generatedAt)}.`;
   } else if (statusContainer && selectedScriptReady) {
-    statusContainer.textContent = `Slides ready: ${scriptSlides} slides. Create an MP4 for this version when ready.`;
+    statusContainer.textContent = `Slides ready: ${scriptSlides} slides.`;
   } else if (statusContainer) {
-    statusContainer.textContent = "Generate slides first, then download Markdown or optionally create an MP4.";
+    statusContainer.textContent = "";
   }
 }
 
@@ -2857,7 +2863,7 @@ async function generateVideoScript(analysisId, container, button, slideCountCont
     renderVideoScript(container, payload.video_script);
     renderVideoScriptDownload(downloadScriptLink, downloadSlidesLink, downloadSlidesHtmlLink, analysisId, payload.video_script);
     syncSlideCount(slideCountControl, payload.video_script);
-    if (statusContainer) statusContainer.textContent = `Slides generated: ${payload.video_script?.scenes?.length || slideCount} slides. Create MP4 for this version when ready.`;
+    if (statusContainer) statusContainer.textContent = `Slides generated: ${payload.video_script?.scenes?.length || slideCount} slides.`;
     slidesGenerated = true;
     await loadHistory();
   } catch (error) {

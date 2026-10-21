@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import html
+import os
 import asyncio
 import json
 import re
@@ -74,6 +75,7 @@ from video_generator import (
 )
 
 APP_VERSION = "per-user-model-20260819"
+VIDEO_ENABLED = os.getenv("VIDEO_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 app = FastAPI(
     title="DeepDoc",
@@ -925,9 +927,10 @@ async def health_check():
     llm_ready = is_llm_configured()
     ffmpeg_ready = shutil.which("ffmpeg") is not None
     tts_health = _tts_health()
-    mp4_ready = ffmpeg_ready and bool(tts_health.get("ready"))
+    mp4_ready = VIDEO_ENABLED and ffmpeg_ready and bool(tts_health.get("ready"))
     return {
-        "status": "ok" if llm_ready and mp4_ready else "degraded",
+        "status": "ok" if llm_ready and (not VIDEO_ENABLED or mp4_ready) else "degraded",
+        "video_enabled": VIDEO_ENABLED,
         "app_version": APP_VERSION,
         "llm_provider": active_llm_provider(),
         "llm_model": active_llm_model(),
@@ -969,7 +972,7 @@ async def get_llm_options(
 
 @app.get("/auth/config")
 async def auth_config():
-    return supabase_public_config()
+    return {**supabase_public_config(), "video_enabled": VIDEO_ENABLED}
 
 
 @app.post("/analyze-document")
@@ -1376,6 +1379,8 @@ async def create_video(
     access_token: str | None = Query(None),
 ):
     user_id = _current_user_id(request, access_token=access_token)
+    if not VIDEO_ENABLED:
+        raise HTTPException(status_code=503, detail="Video generation is currently disabled.")
     record = get_analysis(analysis_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
