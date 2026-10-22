@@ -1,0 +1,332 @@
+{
+  "name": "dev",
+  "purpose": "Development set: run after every pipeline change. Safe to inspect.",
+  "created": "2026-10-21",
+  "summary_mode": "standard",
+  "aclsum": {
+    "dataset": "sobamchan/aclsum",
+    "revision": "08c2433baa76b4a3797a28311d8ffddb98e037e3",
+    "split": "test",
+    "license": "MIT"
+  },
+  "papers": [
+    {
+      "id": "acl:2020.acl-main.642",
+      "source": "acl_anthology",
+      "title": "Aligned Dual Channel Graph Convolutional Network for Visual Question Answering",
+      "pdf_url": "https://aclanthology.org/2020.acl-main.642.pdf",
+      "sha256": "f5c98f3f105bee5448114beb1d229bf549d9668d98508387a332b432fbdbc570",
+      "page_count": 11,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Existing methods for visual question answering only focus on relations between objects in an image neglecting syntactic dependency relations between words in a question.",
+        "approach": "They propose a dual channel graph convolutional network which consists of three modules to capture relations within an image, a syntactic dependency, and between modalities.",
+        "outcome": "The proposed model achieves comparable performance with the state-of-the-art approaches on VQA-v2 and VQA-CP-v2 datasets.",
+        "source_sentences": {
+          "challenge": [
+            "Visual question answering aims to answer the natural language question about a given image .",
+            "Existing graph-based methods only focus on the relations between objects in an image and neglect the importance of the syntactic dependency relations between words in a question .",
+            "Although the relations between two objects in an image have been considered , the attention-based VQA models lack building blocks to explicitly capture the syntactic dependency relations between words in a question ."
+          ],
+          "approach": [
+            "To simultaneously capture the relations between objects in an image and the syntactic dependency relations between words in a question , we propose a novel dual channel graph convolutional network ( DC-GCN ) for better combining visual and textual advantages .",
+            "The DC-GCN model consists of three parts : an I-GCN module to capture the relations between objects in an image , a Q-GCN module to capture the syntactic dependency relations between words in a question , and an attention alignment module to align image representations and question representations .",
+            "Motivated by this , we propose a dual channel graph convolutional network ( DC-GCN ) to simultaneously capture the relations between objects in an image and the syntactic dependency relations between words in a question .",
+            "Our proposed DC-GCN model consists of an Image-GCN ( I-GCN ) module , a Question GCN ( Q-GCN ) module , and an attention alignment module .",
+            "The I-GCN module captures the relations between objects in an image , the Q-GCN module captures the syntactic dependency relations between words in a question , and the attention alignment module is used to align two representations of image and question .",
+            "1 ) We propose a dual channel graph convolutional network ( DC-GCN ) to simultaneously capture the visual and textual relations , and design the attention alignment module to align the multimodal representations , thus reducing the semantic gaps between vision and language .",
+            "In this paper , we propose a dual channel graph convolutional network to explore the relations between objects in an image and the syntactic dependency relations between words in a question .",
+            "Furthermore , we explicitly construct the relations between words by dependency tree and align the image and question representations by an attention alignment module to reduce the gaps between vision and language ."
+          ],
+          "outcome": [
+            "Experimental results show that our model achieves comparable performance with the state-of-theart approaches .",
+            "Experimental results show that the DC-GCN model achieves competitive performance with the state-of-the-art approaches .",
+            "Extensive experiments on the VQA-v2 and VQA-CP-v2 datasets demonstrate that our model achieves comparable performance with the stateof-the-art approaches ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:2020.acl-main.733",
+      "source": "acl_anthology",
+      "title": "Frugal Paradigm Completion",
+      "pdf_url": "https://aclanthology.org/2020.acl-main.733.pdf",
+      "sha256": "2cd2987e2a99878ebffdd945b4695490c595cf218c618499fe0505b5284c5f5e",
+      "page_count": 26,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Lexica distinguishing all morphologically related forms is crucial to language technologies but building such a resource requires expensive human effort.",
+        "approach": "They propose a language-agnostic method which predicts all related forms in a morphological paradigm from a few manual annotations by inducing typological information during training.",
+        "outcome": "The proposed method reduced the manual labor for expanding a morphological lexicon by 16 - 63% over existing methods in 7 languages.",
+        "source_sentences": {
+          "challenge": [
+            "Lexica distinguishing all morphologically related forms of each lexeme are crucial to many language technologies , yet building them is expensive .",
+            "From syntactic parsing ( Seeker and Kuhn , 2013 ) to text-to-speech ( Zen et al . , 2016 ; Wan et al . , 2019 ) , many linguistic technologies rely on accurate lexica decorated with morphological information .",
+            "Yet , building such lexica requires much human effort ( Buckwalter , 2002 ; Tadić and Fulgosi , 2003 ; Forsberg et al . , 2006 ; Sagot , 2010 ; Eskander et al . , 2013 ) ."
+          ],
+          "approach": [
+            "We propose Frugal Paradigm Completion , an approach that predicts all related forms in a morphological paradigm from as few manually provided forms as possible .",
+            "It induces typological information during training which it uses to determine the best sources at test time .",
+            "We present a language-agnostic method for minimizing the manual labor required to add new paradigms to an existing lexicon .",
+            "We train a source selection agent ( SSA ) to induce typological knowledge regarding the distribution of complexity in paradigms and use this to request informative source cells to be realized by an oracle ."
+          ],
+          "outcome": [
+            "We evaluate our language-agnostic approach on 7 diverse languages .",
+            "Compared to popular alternative approaches , our Frugal Paradigm Completion approach reduces manual labor by 16 - 63 % and is the most robust to typological variation .",
+            "We presented Frugal Paradigm Completion , which reduces the manual labor required to expand a morphological lexicon by 16 - 63 % over competitive approaches across 7 languages ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:2021.naacl-main.470",
+      "source": "acl_anthology",
+      "title": "Sliding Selector Network with Dynamic Memory for Extractive Summarization of Long Documents",
+      "pdf_url": "https://aclanthology.org/2021.naacl-main.470.pdf",
+      "sha256": "a8d459e9d031f2b4143b0ebddbf236f2da805da90152901da27adbac60d8b5a1",
+      "page_count": 11,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Neural-based summarization models truncate documents because of the length limitation leading to a loss of summary-relevant contents and the sliding window approach is not suitable.",
+        "approach": "They propose to employ a sliding window to extract summaries segment by segment with a memory mechanism for preserving and updating the history information dynamically.",
+        "outcome": "The proposed model achieves state-of-the-art on two large-scale long document summarization datasets based on scientific papers.",
+        "source_sentences": {
+          "challenge": [
+            "Neural-based summarization models suffer from the length limitation of text encoder .",
+            "Long documents have to been truncated before they are sent to the model , which results in huge loss of summary-relevant contents .",
+            "This inferior performance is partly due to the truncation operation , which inevitably leads to information loss , especially for extractive models because parts of gold sentences would be inaccessible .",
+            "A practical solution for this problem is to use a sliding window to process documents separately .",
+            "However , such a paradigm is not suitable for summarization task because the concatenation of summaries that are independently extracted from local contexts is usually inconsistent with the gold summary of the entire document ."
+          ],
+          "approach": [
+            "To address this issue , we propose the sliding selector network with dynamic memory for extractive summarization of long-form documents , which employs a sliding window to extract summary sentences segment by segment .",
+            "Moreover , we adopt memory mechanism to preserve and update the history information dynamically , allowing the semantic flow across different windows .",
+            "In this paper , we propose a novel extractive summarization model for long-form documents .",
+            "We split the input document into multiple windows and encode them with a sliding encoder sequentially .",
+            "During this process , we introduce a memory to preserve salient information learned from previous windows , which is used to complete and enrich local texts .",
+            "( 1 ) We propose a novel extractive summarization model that can summarize documents of arbitrary length without truncation loss .",
+            "Also , it employs the memory mechanism to address context fragmentation .",
+            "In this study , we propose a novel extractive summarization that can summarize long-form documents without content loss ."
+          ],
+          "outcome": [
+            "Experimental results on two large-scale datasets that consist of scientific papers demonstrate that our model substantially outperforms previous state-of-the-art models .",
+            "( 3 ) Our model achieves the state-of-the-art results on two widely used datasets for long document summarization .",
+            "We conduct extensive experiments on two well-studied datasets that consist of scientific papers .",
+            "Experimental results demonstrate that our model outperforms previous stateof-the-art models ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:2022.acl-long.480",
+      "source": "acl_anthology",
+      "title": "From Simultaneous to Streaming Machine Translation by Leveraging Streaming History",
+      "pdf_url": "https://aclanthology.org/2022.acl-long.480.pdf",
+      "sha256": "c47688b498142972fd70ddb44e51c0153dd5a2097572d51c3e202ca68ff49320",
+      "page_count": 14,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "The streaming machine translation task posts additional challenges over simultaneous counterparts which are the leverage of the streaming history beyond sentence level and latency constraints.",
+        "approach": "They extend a unidirectional encoder-decoder-based simultaneous sentence-level system to the streaming setup by leveraging the streaming history across sentence boundaries.",
+        "outcome": "The proposed model outperforms the baseline model and is comparable to the state-of-the-art simultaneous systems in quality and latency on IWSLT translation tasks.",
+        "source_sentences": {
+          "challenge": [
+            "Simultaneous Machine Translation ( MT ) is the task of incrementally translating an input sentence before it is fully available .",
+            "Streaming MT poses two main additional challenges over simultaneous MT .",
+            "First , the MT system must be able to leverage the streaming history beyond the sentence level both at training and inference time .",
+            "Second , the system must work under latency constraints over the entire stream ."
+          ],
+          "approach": [
+            "In this work , a state-of-the-art simultaneous sentencelevel MT system is extended to the streaming setup by leveraging the streaming history .",
+            "In this work , the simultaneous MT model based on a unidirectional encoder-decoder and training along multiple wait-k paths proposed by ( Elbayad et al . , 2020a ) is evolved into a streamingready simultaneous MT model .",
+            "On the one hand , we successfully leverage streaming history across sentence boundaries for a simultaneous MT system based on multiple wait-k paths that allows our system to greatly improve the results of the sentence-level baseline ."
+          ],
+          "outcome": [
+            "Extensive empirical results are reported on IWSLT Translation Tasks , showing that leveraging the streaming history leads to significant quality gains .",
+            "This streaming MT system is thoroughly assessed on IWSLT translation tasks to show how leveraging the streaming history provides systematic and significant BLEU improvements over the baseline , while reported stream-adapted latency measures are fully consistent and interpretable .",
+            "Finally , our system favourably compares in terms of translation quality and latency to the latest state-of-the-art simultaneous MT systems ( Ansari et al . , 2020 ) .",
+            "On the one hand , we successfully leverage streaming history across sentence boundaries for a simultaneous MT system based on multiple wait-k paths that allows our system to greatly improve the results of the sentence-level baseline .",
+            "Our proposed MT system has been evaluated under a realistic streaming setting being able to reach similar translation quality than a state-of-theart segmentation-free streaming MT system at a fraction of its latency .",
+            "Additionally , our system has been shown to be competitive when compared with state-of-the-art simultaneous MT systems optimized for sentence-level translation , obtaining excellent results using a single model across a wide range of latency levels , thanks to its flexible inference policy ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:2022.naacl-main.154",
+      "source": "acl_anthology",
+      "title": "KroneckerBERT: Significant Compression of Pre-trained Language Models Through Kronecker Decomposition and Knowledge Distillation",
+      "pdf_url": "https://aclanthology.org/2022.naacl-main.154.pdf",
+      "sha256": "dbb86e088ad00b409d140b7d9bcbcb2f1d4310223fe5d4d24fcc4cdf76e049d9",
+      "page_count": 12,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Moderate or Extreme model compressions with factors of > 5 or 10  for transformer models are challenging without a significant performance drop or massive training.",
+        "approach": "They propose a compression method with Kronecker decomposition with a two-staged knowledge distillation from intermediate layers of the original model to avoid losing the expressiveness.",
+        "outcome": "Their model outperforms state-of-the-art compressed models on GLUE and SQuAD and retains more than 99% of the accuracy while using 13% of the original parameters.",
+        "source_sentences": {
+          "challenge": [
+            "Recent works have been relatively successful in compressing Transformer-based PLMs to a certain degree ( Sanh et al . , 2019 ; Sun et al . , 2019 ; Jiao et al . , 2019 ; Sun et al . , 2020 ; Xu et al . , 2020 ; Wang et al . , 2020 ; Kim et al . , 2021 ) ; however , moderate and extreme compression of these models ( compression factors > 5 and 10 resepctively ) is still quite challenging .",
+            "In particular , several works ( Mao et al . , 2020 ; Zhao et al . , 2019a Zhao et al . , , 2021 ) ) that have tried to go beyond the compression factor of 10 , have done so at the expense of a significant drop in performance .",
+            "Following the classical assumption that matrices often follow a low-rank structure , low-rank decomposition methods have been used for compression of weight matrices in deep learning models ( Yu et al . , 2017 ; Swaminathan et al . , 2020 ; Winata et al . , 2019 ) and especially Transformer-based models ( Noach and Goldberg , 2020 ; Mao et al . , 2020 ) .",
+            "Another example is TinyBERT ( Jiao et al . , 2019 ) which requires pretraining on the entire English Wikipedia and also uses extensive data augmentation ( 20× ) for fine-tuning on the downstream tasks ."
+          ],
+          "approach": [
+            "We push the limits of state-of-the-art Transformer-based pre-trained language model compression using Kronecker decomposition .",
+            "We present our KroneckerBERT , a compressed version of the BERT BASE model obtained by compressing the embedding layer and the linear mappings in the multi-head attention , and the feed-forward network modules in the Transformer layers .",
+            "Our KroneckerBERT is trained via a very efficient two-stage knowledge distillation scheme using far fewer data samples than state-of-the-art models like MobileBERT and TinyBERT .",
+            "We use Kronecker decomposition for the compression of both Transformer layers and the embedding layer .",
+            "For Transformer layers , the compression is achieved by representing every weight matrix both in the multi-head attention ( MHA ) and the feed-forward neural network ( FFN ) as a Kronecker product of two smaller matrices .",
+            "We also propose a Kronecker decomposition for compression of the embedding layer .",
+            "Using Kronecker decomposition for large compression factors leads to a reduction in the model expressiveness .",
+            "To address this issue , we propose to distill knowledge from the intermediate layers of the original uncompressed network to the Kronecker network during training .",
+            "We introduced a novel method for compressing Transformer-based language models that uses Kronecker decomposition for the compression of the embedding layer and the linear mappings within the Transformer blocks .",
+            "We used a very light two-stage KD method to train the compressed model ."
+          ],
+          "outcome": [
+            "We show that our KroneckerBERT with compression factors of 7.7× and 21× outperforms state-of-theart compression methods on the GLUE and SQuAD benchmarks .",
+            "In particular , using only 13 % of the teacher model parameters , it retain more than 99 % of the accuracy on the majority of GLUE tasks .",
+            "We show that our Kronecker BERT can out perform state-of-the-art with significantly less training requirements .",
+            "We show that the proposed framework can significantly reduce the size and the number of computations while outperforming stateof-the-art ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:D19-1240",
+      "source": "acl_anthology",
+      "title": "Deep Reinforcement Learning-based Text Anonymization against Private-Attribute Inference",
+      "pdf_url": "https://aclanthology.org/D19-1240.pdf",
+      "sha256": "67b40eb64c614d6e16653963a089c3391d1a029c008d9fa45c5304a375326f7d",
+      "page_count": 10,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "User-generated texts in social media can leak sensitive private information about users however methods for protection have not been investigated well.",
+        "approach": "They propose a reinforcement leaning-based text analyzer which prevents private-attribute leakage while keeping the utility by extracting representations and manipulating with privacy and utility feedback.",
+        "outcome": "The proposed method effectively preserves privacy and utility in textual embeddings in experiments with real-world data.",
+        "source_sentences": {
+          "challenge": [
+            "User-generated textual data is rich in content and has been used in many user behavioral modeling tasks .",
+            "However , it could also leak user private-attribute information that they may not want to disclose such as age and location .",
+            "Social media users generate a tremendous amount of data such as profile information , network connections and online reviews and posts .",
+            "However , user-generated data is rich in content and malicious attackers can infer users ' sensitive information .",
+            "Recent research has shown that textual data alone may contain sufficient information about users ' private-attributes that they do not want to disclose such as age , gender , location , political views and sexual orienta-tion ( Mukherjee and Liu , 2010 ; Volkova et al . , 2015 ) .",
+            "Little attention has been paid to protect users textual information ( Li et al . , 2018 ; Zhang et al . , 2018 ; Anandan et al . , 2012 ; Saygin et al . , 2006 ) ."
+          ],
+          "approach": [
+            "In this paper , we study the problem of textual data anonymization and propose a novel Reinforcement Learning-based Text Anonymizor , RLTA , which addresses the problem of private-attribute leakage while preserving the utility of textual data .",
+            "Our approach first extracts a latent representation of the original text w.r.t .",
+            "a given task , then leverages deep reinforcement learning to automatically learn an optimal strategy for manipulating text representations w.r.t .",
+            "the received privacy and utility feedback .",
+            "In this paper , we propose a deep reinforcement learning based text anonymization , RLTA , which creates a text embedding such that does not leak user 's private-attribute information while preserving its utility w.r.t .",
+            "a given task .",
+            "RLTA has two main components : ( 1 ) an attention based taskaware text representation learner , and ( 2 ) a deep RL based privacy and utility preserver ."
+          ],
+          "outcome": [
+            "Experiments show the effectiveness of this approach in terms of preserving both privacy and utility .",
+            "( 3 ) we conduct experiments on real-world data to demonstrate the effectiveness of RLTA in an important natural language processing task .",
+            "Our results illustrate the effectiveness of RLTA in preserving privacy and utility ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:N19-1362",
+      "source": "acl_anthology",
+      "title": "pair2vec: Compositional Word-Pair Embeddings for Cross-Sentence Inference",
+      "pdf_url": "https://aclanthology.org/N19-1362.pdf",
+      "sha256": "a372f7bd96cb21ad6982fc3bb93aa96578e4f23d60e0148de76d320a9a5419d0",
+      "page_count": 12,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Existing methods for word pair relationship reasoning suffer from learning such relationships because they heavily rely on unsupervised single-word embeddings.",
+        "approach": "They propose a compositional function on word representations which learns maximizing the pointwise mutual information with contexts of two words to compute pairwise embeddings.",
+        "outcome": "The proposed representations coupled with neural cross-sentence inference models achieve gains on SQuAD 2.0 and MultiNLI and generalize better on adversarial datasets.",
+        "source_sentences": {
+          "challenge": [
+            "Reasoning about implied relationships ( e.g. paraphrastic , common sense , encyclopedic ) between pairs of words is crucial for many cross-sentence inference problems .",
+            "Reasoning about relationships between pairs of words is crucial for cross sentence inference problems such as question answering ( QA ) and natural language inference ( NLI ) .",
+            "Recent work ( Glockner et al . , 2018 ) has shown that current models , which rely heavily on unsupervised single-word embeddings , struggle to learn such relationships ."
+          ],
+          "approach": [
+            "This paper proposes new methods for learning and using embeddings of word pairs that implicitly represent background knowledge about such relationships .",
+            "Our pairwise embeddings are computed as a compositional function on word representations , which is learned by maximizing the pointwise mutual information ( PMI ) with the contexts in which the two words cooccur .",
+            "In this paper , we show that they can be learned with word pair vectors ( pair2vec 1 ) , which are trained unsupervised , and which significantly improve performance when added to existing cross-sentence attention mechanisms .",
+            "Unlike single-word representations , which typically model the co-occurrence of a target word x with its context c , our word-pair representations are learned by modeling the three-way cooccurrence between words ( x , y ) and the context c that ties them together , as seen in Table 1 .",
+            "More specifically , we train a feedforward network R(x , y ) that learns representations for the individual words x and y , as well as how to compose them into a single vector .",
+            "Training is done by maximizing a generalized notion of the pointwise mutual information ( PMI ) among x , y , and their context c using a variant of negative sampling ( Mikolov et al . , 2013a ) .",
+            "We presented new methods for training and using word pair embeddings that implicitly represent background knowledge .",
+            "Our pair embeddings are computed as a compositional function of the individual word representations , which is learned by maximizing a variant of the PMI with the contexts in which the the two words co-occur ."
+          ],
+          "outcome": [
+            "Experiments show a gain of 2.7 % on the recently released SQuAD 2.0 and 1.3 % on MultiNLI .",
+            "Our representations also aid in better generalization with gains of around 6 - 7 % on adversarial SQuAD datasets , and 8.8 % on the adversarial entailment test set by Glockner et al . ( 2018 ) .",
+            "Snow et al . , 2005 ; Turney , 2005 ; Shwartz et al . , 2016 ) and knowledge base completion ( Riedel et al . , 2013 ) , this paper shows , for the first time , that large scale learning of pairwise embeddings can be used to directly improve the performance of neural cross-sentence inference models .",
+            "Experiments show that simply adding our wordpair embeddings to existing high-performing models , which already use ELMo ( Peters et al . , 2018 ) , results in sizable gains .",
+            "We show 2.72 F1 points over the BiDAF++ model ( Clark and Gardner , 2018 ) on SQuAD 2.0 ( Rajpurkar et al . , 2018 ) , as well as a 1.3 point gain over ESIM ( Chen et al . , 2017 ) on MultiNLI ( Williams et al . , 2018 ) .",
+            "Additionally , our approach generalizes well to adversarial examples , with a 6 - 7 % F1 increase on adversarial SQuAD ( Jia and Liang , 2017 ) and a 8.8 % gain on the Glockner et al . ( 2018 ) NLI benchmark .",
+            "Experiments on cross-sentence inference benchmarks demonstrated that adding these representations to existing models results in sizable improvements for both in-domain and adversarial settings ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "acl:P17-1143",
+      "source": "acl_anthology",
+      "title": "MalwareTextDB: A Database for Annotated Malware Articles",
+      "pdf_url": "https://aclanthology.org/P17-1143.pdf",
+      "sha256": "b2153304ac58c2d6b25ec502313e949fe2ca433b3663aa1a1bb6c1e2ca11f02d",
+      "page_count": 11,
+      "license": "CC BY 4.0 (ACL Anthology, 2016 onward)",
+      "aclsum": {
+        "challenge": "Regardless of the possible dangers of malware and the existence of related corpus, there are no annotated datasets hindering the development of NLP tools.",
+        "approach": "They present an annotation scheme for malware texts with its instancilization using an existing corpus, and evaluate existing models on the new data and tasks.",
+        "outcome": "Benchmark experiments with newly introduced data and tasks reveal several difficulties in existing models.",
+        "source_sentences": {
+          "challenge": [
+            "Cybersecurity risks and malware threats are becoming increasingly dangerous and common .",
+            "Despite the severity of the problem , there has been few NLP efforts focused on tackling cybersecurity .",
+            "There exists a large repository of malwarerelated texts online , such as detailed malware reports by various cybersecurity agencies such as Symantec ( DiMaggio , 2015 ) and Cylance ( Gross , 2016 ) and in various blog posts .",
+            "Cybersecurity researchers often consume such texts in the process of data collection .",
+            "An immediate problem preventing application of NLP techniques to malware texts is that such texts are mostly unannotated .",
+            "This severely limits their use in supervised learning techniques ."
+          ],
+          "approach": [
+            "In this paper , we discuss the construction of a new database for annotated malware texts .",
+            "An annotation framework is introduced based around the MAEC vocabulary for defining malware characteristics , along with a database consisting of 39 annotated APT reports with a total of 6,819 sentences .",
+            "We also use the database to construct models that can potentially help cybersecurity researchers in their data collection and analytics efforts .",
+            "In light of that , we introduce a database of annotated malware reports for facilitating future NLP work in cybersecurity .",
+            "• We initiate a framework for annotating malware reports and annotate 39 Advanced Persistent Threat ( APT ) reports ( containing 6,819 sentences ) with attribute labels from the Malware Attribute Enumeration and Characterization ( MAEC ) vocabulary ( Kirillov et al . , 2010 ) .",
+            "• We propose the following tasks , construct models for tackling them , and discuss the challenges :",
+            "• Classify if a sentence is useful for inferring malware actions and capabilities , • Predict token , relation and attribute labels for a given malware-related text , as defined by the earlier framework , and • Predict a malware 's signatures based only on text describing the malware .",
+            "In this paper , we presented a framework for annotating malware reports .",
+            "We also introduced a database with 39 annotated APT reports and proposed several new tasks and built models for extracting information from the reports ."
+          ],
+          "outcome": [
+            "Finally , we discuss several factors that make these tasks extremely challenging given currently available models ."
+          ]
+        }
+      }
+    },
+    {
+      "id": "arxiv:2610.28575v1",
+      "source": "arxiv",
+      "category": "astro-ph.EP",
+      "title": "A sub-Earth-sized TESS planet candidate in the nearby M-dwarf binary GJ 774, most likely orbiting GJ 774 A (TIC 351339274)",
+      "pdf_url": "https://arxiv.org/pdf/2610.28575v1",
+      "sha256": "b4c7aa43c6c69a7052de53a57061824d1ce4b423cd5382b72122b55f02459cb9",
+      "page_count": 21,
+      "license": "per arXiv listing; PDF is downloaded, not redistributed"
+    },
+    {
+      "id": "arxiv:2610.27331v1",
+      "source": "arxiv",
+      "category": "q-bio.GN",
+      "title": "Reading Between the Reads: A Decade On, Revisiting Sequencing Protocol Annotation in the Sequence Read Archive",
+      "pdf_url": "https://arxiv.org/pdf/2610.27331v1",
+      "sha256": "a64a30ed3124787a53f841c483e45fab5179491bfe604220ffebe9c8b8d29c40",
+      "page_count": 15,
+      "license": "per arXiv listing; PDF is downloaded, not redistributed"
+    }
+  ]
+}
