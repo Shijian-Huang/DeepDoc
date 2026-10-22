@@ -231,6 +231,16 @@ class CheckTests(BenchmarkTestCase):
         checked = self.check(make_result(evidence=[{"claim": "Recall improves.", "source_ids": ["abstract_p1_01"], "pages": [4]}]))
         self.assertEqual(checked["invalid_evidence"], 1)
 
+    def test_unsupported_evaluative_wording_and_field_counts(self):
+        result = make_result(contributions=[], key_ideas=["A novel sparse retrieval model for long scientific documents."])
+        result["document_summary"]["diagnostics"].update({"checked_sentence_count": 8, "filtered_sentences": [{}, {}]})
+        checked = self.check(result)
+        self.assertEqual(checked["unsupported_evaluative_words"], 1)
+        self.assertIn("unsupported_evaluative_wording", self.categories(checked))
+        self.assertTrue(checked["contributions_empty"])
+        self.assertEqual((checked["key_idea_count"], checked["contribution_count"]), (1, 0))
+        self.assertEqual(checked["filtered_share"], 0.25)
+
     def test_failed_run_is_recorded(self):
         checked = self.check(None, status="error")
         self.assertTrue(checked["failed"])
@@ -265,6 +275,14 @@ class CompareTests(unittest.TestCase):
         before = self.checks([[1, 1], [1, 1], [0, 0]])
         after = self.checks([[4, 4], [5, 5], [3, 3]], run="v2/ollama-qwen3-8b")
         self.assertIn("⚠️ worse", self.row(benchmark.compare_checks(before, after)))
+
+    def test_informational_metrics_have_no_verdict(self):
+        before = self.checks([[1, 1]])
+        after = self.checks([[2, 2]], run="v2/ollama-qwen3-8b")
+        for checks, words in ((before, 150), (after, 200)):
+            for run in checks["runs"]:
+                run["summary_words"] = words
+        self.assertIn("| 150.00 | 200.00 | - | info |", self.row(benchmark.compare_checks(before, after), "Summary words"))
 
     def test_report_lists_frequent_issues(self):
         checks = self.checks([[1]])

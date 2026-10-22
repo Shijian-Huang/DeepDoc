@@ -44,6 +44,10 @@ STOPWORDS = {
     "results", "result", "method", "approach", "model", "models", "new", "both", "more", "most", "not", "but",
 }
 NUMBER_PATTERN = re.compile(r"(?<![\w.])\d{1,3}(?:,\d{3})+(?![\d])|(?<![\w.])\d+(?:\.\d+)?")
+EVALUATIVE_PATTERN = re.compile(
+    r"(?<![a-z0-9])(novel|first|significant|significantly|best|state-of-the-art|breakthrough|groundbreaking)(?![a-z0-9])",
+    re.IGNORECASE,
+)
 COVERAGE_THRESHOLD = 0.5
 COPY_SHINGLE = 5
 COPY_THRESHOLD = 0.8
@@ -299,8 +303,12 @@ class PaperText:
         self.numbers = extract_numbers(text)
         self.shingles = _shingles(_words(text))
         self.compact = _compact(text)
+        self.words = set(_words(text))
         abstract = split_pages_into_sections(pages).get("abstract", {}).get("text", "")
         self.abstract_sentences = _clean_abstract(abstract)
+
+    def has_term(self, term: str) -> bool:
+        return term in self.words if term.isalpha() else _compact(term) in self.compact
 
 
 def _issue(paper_id: str, repeat: int, category: str, field: str, text: str, severity: str,
@@ -344,6 +352,15 @@ def check_run(record: dict[str, Any], paper: dict[str, Any], paper_text: PaperTe
     copied = [(field, text) for field, text in written if copied_fraction(text, paper_text.shingles) >= COPY_THRESHOLD]
     for field, text in copied:
         issues.append(_issue(paper_id, repeat, "copied_from_paper", field, text, "low", "high", "post-processing or grounding"))
+    # Evaluative wording the paper itself never uses.
+    unsupported_evaluative = 0
+    for field, text in written:
+        terms = sorted({match.lower() for match in EVALUATIVE_PATTERN.findall(text)})
+        missing = [term for term in terms if not paper_text.has_term(term)]
+        if missing:
+            unsupported_evaluative += len(missing)
+            issues.append(_issue(paper_id, repeat, "unsupported_evaluative_wording", field, text, "medium", "high",
+                                 "generation prompt", f"not used in the paper: {', '.join(missing)}"))
     fact_texts = {_normalize(fact.get("fact")).rstrip(".").lower() for fact in summary.get("verified_facts") or []}
     padded = sum(1 for text in summary_sentences if text.rstrip(".").lower() in fact_texts)
 
@@ -433,6 +450,12 @@ def check_run(record: dict[str, Any], paper: dict[str, Any], paper_text: PaperTe
         "aclsum_not_in_input": sum(1 for item in aspects.values() if item["in_model_input"] is False),
         "invalid_evidence": invalid_evidence,
         "filtered_sentences": len(filtered),
+        "filtered_share": round(len(filtered) / diagnostics["checked_sentence_count"], 4)
+        if diagnostics.get("checked_sentence_count") else None,
+        "contributions_empty": not contributions,
+        "key_idea_count": len(key_ideas),
+        "contribution_count": len(contributions),
+        "unsupported_evaluative_words": unsupported_evaluative,
         "compact_retry": bool(diagnostics.get("compact_retry")),
         "deterministic_fallback": bool(diagnostics.get("deterministic_fallback")),
         "verified_fact_count": diagnostics.get("verified_fact_count"),
@@ -486,6 +509,12 @@ METRICS = [
     ("Duplicated item pairs", "duplicate_pairs", "lower", "num"),
     ("Invalid evidence references", "invalid_evidence", "lower", "num"),
     ("Sentences removed by grounding filter", "filtered_sentences", "lower", "num"),
+    ("Generated sentences removed by grounding (share)", "filtered_share", "lower", "pct"),
+    ("Runs with no contributions (share)", "contributions_empty", "lower", "pct"),
+    ("Evaluative words not used in the paper", "unsupported_evaluative_words", "lower", "num"),
+    ("Summary words", "summary_words", "info", "num"),
+    ("Key ideas", "key_idea_count", "info", "num"),
+    ("Contributions", "contribution_count", "info", "num"),
     ("Fact-extraction retries (share)", "compact_retry", "lower", "pct"),
     ("Deterministic fallbacks (share)", "deterministic_fallback", "lower", "pct"),
 ]
@@ -559,6 +588,9 @@ def compare_checks(before: dict[str, Any], after: dict[str, Any]) -> str:
         mean_after = statistics.fmean(stats_after[paper][0] for paper in shared)
         noise = max(statistics.fmean(stats_before[paper][1] for paper in shared),
                     statistics.fmean(stats_after[paper][1] for paper in shared))
+        if direction == "info":
+            lines.append(f"| {label} | {_format(mean_before, style)} | {_format(mean_after, style)} | - | info |")
+            continue
         sign = 1 if direction == "higher" else -1
         better = sum(1 for paper in shared if sign * (stats_after[paper][0] - stats_before[paper][0]) > 1e-9)
         worse = sum(1 for paper in shared if sign * (stats_after[paper][0] - stats_before[paper][0]) < -1e-9)
