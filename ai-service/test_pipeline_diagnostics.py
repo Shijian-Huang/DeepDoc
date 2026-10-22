@@ -55,6 +55,20 @@ class PipelineDiagnosticsTests(unittest.TestCase):
             with self.subTest(sentence=sentence):
                 self.assertEqual(bool(summarizer._supported_sentences(sentence, ["fact_01"], [fact])), expected)
 
+    def test_high_risk_terms_match_whole_word_starts(self):
+        source = "The model improves accuracy on three datasets compared with the baseline model."
+        self.assertTrue(summarizer._claim_supported_by_text("The model improves accuracy on three datasets.", source))
+        self.assertTrue(summarizer._claim_supported_by_text(
+            "The model achieves improvements in accuracy on three datasets.", "The model achieves improvements in accuracy on three datasets."
+        ))
+        self.assertFalse(summarizer._claim_supported_by_text("The model proves accuracy gains on three datasets.", source))
+        self.assertFalse(summarizer._claim_supported_by_text("The novelty is better accuracy on three datasets.", source))
+
+    def test_summary_prompt_discourages_unsupported_evaluative_words(self):
+        prompt = summarizer.build_research_summary_prompt([], "standard")
+        self.assertIn("Do not use evaluative words such as novel", prompt)
+        self.assertNotIn("genuinely new", prompt)
+
     def test_retry_and_fallback_are_recorded(self):
         text = "The study evaluates a retrieval method on three datasets."
         sources = [{"source_id": "p1", "excerpt": text, "pages": [1], "section": "method"}]

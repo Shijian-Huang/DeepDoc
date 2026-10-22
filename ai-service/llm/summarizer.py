@@ -584,6 +584,11 @@ def _source_map(evidence_sources: list[dict]) -> dict[str, dict]:
     }
 
 
+def _contains_term(text: str, term: str) -> bool:
+    """Match a term at a word start, so "prove" matches "proves" but not "improves"."""
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}", text) is not None
+
+
 def _claim_supported_by_text(claim: str, source_text: str, min_overlap: float = 0.32) -> bool:
     if not claim or not source_text:
         return False
@@ -598,7 +603,10 @@ def _claim_supported_by_text(claim: str, source_text: str, min_overlap: float = 
     )
     normalized_claim = _normalized_match_text(claim)
     normalized_source = _normalized_match_text(source_text)
-    if any(term in normalized_claim and term not in normalized_source for term in high_risk_terms):
+    if any(
+        _contains_term(normalized_claim, term) and not _contains_term(normalized_source, term)
+        for term in high_risk_terms
+    ):
         return False
     claim_tokens = _content_tokens(claim)
     source_tokens = _content_tokens(source_text)
@@ -1115,8 +1123,10 @@ def build_research_summary_prompt(
     - The Overview must include the central method and the most important supported findings when available.
     - "key_ideas" should capture the most important conceptual ideas needed to understand the paper.
       Avoid phrasing these as novelty claims.
-    - "contributions" should capture what is genuinely new or added by the paper.
+    - "contributions" should state, in plain terms, what this paper itself proposes, builds, or shows.
       Avoid repeating general background, motivation, or the same wording used in key_ideas.
+    - Do not use evaluative words such as novel, first, significant, significantly, best, or state-of-the-art
+      unless the cited fact itself uses that word.
     - Keep all fields evidence-grounded.
     - Every summary paragraph, key idea, contribution, and evidence item must cite the exact fact_ids it uses.
     - Every sentence must be fully supported by its cited facts; do not add transitions that introduce new claims.
