@@ -241,6 +241,18 @@ class CheckTests(BenchmarkTestCase):
         self.assertEqual((checked["key_idea_count"], checked["contribution_count"]), (1, 0))
         self.assertEqual(checked["filtered_share"], 0.25)
 
+    def test_citation_metrics(self):
+        result = make_result(citations={
+            "summary": [{"text": "x", "pages": [1]}, {"text": "y", "pages": [9]}],
+            "key_ideas": [None],
+            "contributions": [],
+        })
+        result["document_summary"]["diagnostics"].update({"cited_sentence_count": 3, "uncited_sentence_count": 1})
+        checked = self.check(result)
+        self.assertEqual(checked["cited_share"], 0.75)
+        self.assertEqual(checked["invalid_citation_pages"], 1)
+        self.assertIsNone(self.check(make_result())["cited_share"])
+
     def test_failed_run_is_recorded(self):
         checked = self.check(None, status="error")
         self.assertTrue(checked["failed"])

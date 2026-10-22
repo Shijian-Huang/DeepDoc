@@ -69,6 +69,69 @@ class PipelineDiagnosticsTests(unittest.TestCase):
         self.assertIn("Do not use evaluative words such as novel", prompt)
         self.assertNotIn("genuinely new", prompt)
 
+    def test_citations_map_final_sentences_to_sources(self):
+        problem = "Long documents are hard for dense retrievers because relevant passages are spread across pages."
+        method = "The paper proposes a sparse retriever that indexes each section of a long document separately."
+        result_text = "The sparse retriever improves recall by 4.2 points on three benchmark datasets."
+        sources = [
+            {"source_id": "intro_p1_01", "section": "introduction", "pages": [1, 2], "excerpt": f"{problem} {method}"},
+            {"source_id": "results_p5_01", "section": "results", "pages": [5], "excerpt": result_text},
+        ]
+        facts = {"facts": [
+            {"category": "research_question", "fact": problem, "source_ids": ["intro_p1_01"], "source_quote": problem},
+            {"category": "method", "fact": method, "source_ids": ["intro_p1_01"], "source_quote": method},
+            {"category": "result", "fact": result_text, "source_ids": ["results_p5_01"], "source_quote": result_text},
+        ]}
+        analysis = {
+            "summary_paragraphs": [
+                {"text": "Dense retrievers struggle with long documents because relevant passages are spread across pages.", "fact_ids": ["fact_01"]},
+                {"text": "This breakthrough transforms how everyone reads papers.", "fact_ids": ["fact_02"]},
+            ],
+            "summary_word_count": 0,
+            "key_ideas": [{"text": "A sparse retriever indexes each section of a long document separately.", "fact_ids": ["fact_02"]}],
+            "contributions": [],
+            "evidence": [],
+        }
+        with patch.object(summarizer, "generate_json", side_effect=[facts, analysis]):
+            result = summarizer.summarize_research_paper("packet", summary_mode="paragraph", evidence_sources=sources)
+
+        citations = result["citations"]
+        self.assertNotIn("breakthrough", result["summary"])
+        first = citations["summary"][0]
+        self.assertEqual(first["text"], "Dense retrievers struggle with long documents because relevant passages are spread across pages.")
+        self.assertEqual((first["origin"], first["fact_ids"], first["source_ids"], first["pages"]), ("generated", ["fact_01"], ["intro_p1_01"], [1, 2]))
+        padded = [citation for citation in citations["summary"] if citation["origin"] == "source_fact"]
+        self.assertTrue(padded)
+        self.assertTrue(all(citation["text"] in result["summary"] for citation in citations["summary"]))
+        self.assertEqual(citations["key_ideas"][0]["source_ids"], ["intro_p1_01"])
+        self.assertEqual(citations["contributions"], [])
+        self.assertEqual(result["diagnostics"]["uncited_sentence_count"], 0)
+        self.assertEqual(result["diagnostics"]["cited_sentence_count"], len(citations["summary"]) + 1)
+
+    def test_citation_pages_narrow_to_the_page_containing_the_quote(self):
+        citations = {"summary": [{"quotes": ["The sparse retriever improves recall by 4.2 points."], "pages": [3, 4, 5]}],
+                     "key_ideas": [None], "contributions": []}
+        pages = [
+            {"page": 3, "text": "Method details."},
+            {"page": 4, "text": "Results: The sparse retriever improves\nrecall by 4.2 points."},
+            {"page": 5, "text": "Conclusion."},
+        ]
+        pipeline._locate_citation_pages(citations, pages)
+        self.assertEqual(citations["summary"][0]["pages"], [4])
+        self.assertEqual(citations["summary"][0]["quote_pages"], [[4]])
+        self.assertEqual(citations["summary"][0]["page_source"], "quote")
+
+    def test_citation_quotes_on_different_pages_keep_their_own_pages(self):
+        citation = {"quotes": ["Models (2) and (3) show no significant difference in time.", "One participant was surprised by how little code they read."],
+                    "pages": [3, 4, 5, 6, 7, 8, 9, 10]}
+        pages = [
+            {"page": 6, "text": "Models (2) and (3) show no significant difference in time."},
+            {"page": 10, "text": "One participant was surprised by how little code they read."},
+        ]
+        pipeline._locate_citation_pages({"summary": [citation]}, pages)
+        self.assertEqual(citation["quote_pages"], [[6], [10]])
+        self.assertEqual(citation["pages"], [6, 10])
+
     def test_retry_and_fallback_are_recorded(self):
         text = "The study evaluates a retrieval method on three datasets."
         sources = [{"source_id": "p1", "excerpt": text, "pages": [1], "section": "method"}]

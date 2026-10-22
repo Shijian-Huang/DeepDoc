@@ -1,3 +1,4 @@
+import re
 import time
 
 from llm.summarizer import active_llm_model, active_llm_provider, normalize_summary_mode, summarize_research_paper
@@ -75,6 +76,7 @@ def run_pipeline(file_path: str, summary_mode: str = "standard"):
     if final_summary.get("error"):
         raise RuntimeError(str(final_summary["error"]))
     final_summary.setdefault("title", paper_title)
+    _locate_citation_pages(final_summary.get("citations"), pages)
     references_started = time.perf_counter()
     reference_fields = _reference_result_fields(raw_text)
     diagnostics["stage_seconds"]["references"] = round(time.perf_counter() - references_started, 4)
@@ -92,6 +94,34 @@ def run_pipeline(file_path: str, summary_mode: str = "standard"):
         "evidence_sources": evidence_sources,
         "page_count": len(pages)
     }
+
+
+def _compact_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+
+def _locate_citation_pages(citations: dict | None, pages: list[dict]) -> None:
+    """Narrow each citation from its section's page range to the pages that contain its quotes."""
+    if not isinstance(citations, dict):
+        return
+    page_texts = [
+        (page["page"], _compact_text(page.get("text", "")) + " " + _compact_text(page.get("raw_text", "")))
+        for page in pages
+    ]
+    for entries in citations.values():
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            quote_pages = [
+                [number for number, text in page_texts if _compact_text(quote)[:120] in text]
+                if len(_compact_text(quote)) >= 20 else []
+                for quote in entry.get("quotes", [])
+            ]
+            found = sorted({number for numbers in quote_pages for number in numbers})
+            entry["quote_pages"] = quote_pages
+            entry["page_source"] = "quote" if found else "section"
+            if found:
+                entry["pages"] = found
 
 
 def _reference_result_fields(raw_text: str) -> dict:
