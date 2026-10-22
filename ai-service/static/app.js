@@ -2401,12 +2401,17 @@ function renderResult(result, fallbackFilename = "Analysis Result", options = {}
   titleElement.textContent = paperTitle;
   titleElement.title = paperTitle;
   node.querySelector('[data-field="meta"]').textContent = formatMeta(result);
-  renderSummaryText(node.querySelector('[data-field="summary"]'), summaryText);
+  const citations = summary.citations || {};
+  renderSummaryText(node.querySelector('[data-field="summary"]'), summaryText, citations.summary || []);
   node.querySelector('[data-field="overviewMeta"]').textContent = formatOverviewMeta(result, summaryText);
   renderPaperInfo(node.querySelector('[data-field="paperInfo"]'), result, fallbackFilename);
 
-  renderList(node.querySelector('[data-field="keyIdeas"]'), summary.key_ideas || [], {variant: "ideas", limit: 5});
-  renderList(node.querySelector('[data-field="contributions"]'), summary.contributions || [], {variant: "contributions", limit: 5});
+  renderList(node.querySelector('[data-field="keyIdeas"]'), summary.key_ideas || [], {
+    variant: "ideas", limit: 5, citations: citations.key_ideas || [],
+  });
+  renderList(node.querySelector('[data-field="contributions"]'), summary.contributions || [], {
+    variant: "contributions", limit: 5, citations: citations.contributions || [],
+  });
   renderEvidenceViewer(node.querySelector('[data-field="evidence"]'), summary.evidence || [], {
     emptyText: "No evidence claims returned.",
   });
@@ -2594,6 +2599,11 @@ async function checkPdfAvailability(viewer, placeholder, pdfUrl, downloadPdf) {
 }
 
 function handleEvidenceNavigation(event) {
+  const citationChip = event.target.closest(".citation-chip");
+  if (citationChip) {
+    navigateToEvidencePage(Number(citationChip.dataset.page || 0));
+    return;
+  }
   const evidenceItem = event.target.closest(".evidence-viewer");
   if (!evidenceItem) return;
   const page = Number(evidenceItem?.dataset.page || 0);
@@ -2627,11 +2637,12 @@ function navigateToEvidencePage(page, activeEvidenceItem = null) {
     return;
   }
 
-  viewer.hidden = false;
-  viewer.removeAttribute("src");
-  requestAnimationFrame(() => {
-    viewer.src = pdfViewerUrl(pdfUrl, page);
-  });
+  // Browser PDF viewers ignore a changed #page on an already loaded document, and clearing
+  // src first can leave the frame blank for blob: URLs. Load the page in a fresh frame instead.
+  const freshViewer = viewer.cloneNode(false);
+  freshViewer.hidden = false;
+  freshViewer.src = pdfViewerUrl(pdfUrl, page);
+  viewer.replaceWith(freshViewer);
   if (placeholder) placeholder.hidden = true;
   markActiveEvidence(activeEvidenceItem);
 }
@@ -2940,9 +2951,11 @@ function scriptSlideCount(script) {
   return Number(script.slide_count || script.scenes.length || 0);
 }
 
-function renderSummaryText(container, text) {
+function renderSummaryText(container, text, citations = []) {
   if (!container) return;
   container.innerHTML = "";
+  container.dataset.copyText = String(text || "").trim();
+  const citationByText = new Map(citations.filter(Boolean).map((citation) => [citationKey(citation.text), citation]));
   const paragraphs = String(text || "No summary returned.")
     .split(/\n\s*\n+/)
     .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
@@ -2950,9 +2963,66 @@ function renderSummaryText(container, text) {
 
   (paragraphs.length ? paragraphs : ["No summary returned."]).forEach((paragraph) => {
     const item = document.createElement("p");
-    item.textContent = paragraph;
+    if (!citationByText.size) {
+      item.textContent = paragraph;
+    } else {
+      paragraph.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/).forEach((sentence, index) => {
+        if (index) item.appendChild(document.createTextNode(" "));
+        item.appendChild(document.createTextNode(sentence));
+        createCitationChips(citationByText.get(citationKey(sentence))).forEach((chip) => item.appendChild(chip));
+      });
+    }
     container.appendChild(item);
   });
+}
+
+function citationKey(text) {
+  return String(text || "").replace(/\s+/g, " ").trim().replace(/[.!?\s]+$/, "").toLowerCase();
+}
+
+function validPages(pages) {
+  return Array.isArray(pages) ? pages.filter((page) => Number.isInteger(page) && page > 0) : [];
+}
+
+function createCitationChips(citation) {
+  if (!citation) return [];
+  const quotes = Array.isArray(citation.quotes) ? citation.quotes : [];
+  const quotePages = Array.isArray(citation.quote_pages) ? citation.quote_pages : [];
+  // One chip per located page range, so each chip opens and describes its own quote.
+  const groups = new Map();
+  quotes.forEach((quote, index) => {
+    const pages = validPages(quotePages[index]);
+    if (!pages.length) return;
+    const label = formatPageRange(pages);
+    if (!groups.has(label)) groups.set(label, {pages, quotes: []});
+    groups.get(label).quotes.push(quote);
+  });
+  if (!groups.size) {
+    const pages = validPages(citation.pages);
+    if (!pages.length) return [];
+    groups.set(formatPageRange(pages), {pages, quotes: quotes.slice(0, 1)});
+  }
+  return [...groups.entries()]
+    .sort(([, a], [, b]) => Math.min(...a.pages) - Math.min(...b.pages))
+    .map(([label, group]) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "citation-chip";
+      chip.dataset.page = String(Math.min(...group.pages));
+      chip.textContent = `p.${label}`;
+      chip.title = group.quotes.length
+        ? `Source (p.${label}): ${group.quotes.map((quote) => `"${quote}"`).join("\n")}`
+        : `Go to page ${chip.dataset.page}`;
+      chip.setAttribute("aria-label", `Show source on page ${chip.dataset.page}`);
+      return chip;
+    });
+}
+
+function formatPageRange(pages) {
+  const sorted = [...new Set(pages)].sort((a, b) => a - b);
+  const contiguous = sorted.every((page, index) => index === 0 || page === sorted[index - 1] + 1);
+  if (sorted.length > 1 && contiguous) return `${sorted[0]}–${sorted[sorted.length - 1]}`;
+  return sorted.join(", ");
 }
 
 function selectedSlides(control) {
@@ -2986,6 +3056,10 @@ function renderList(container, items, options = {}) {
       }
     } else {
       li.textContent = item;
+      const citation = (options.citations || [])[index];
+      if (citation && citationKey(citation.text) === citationKey(item)) {
+        createCitationChips(citation).forEach((chip) => li.appendChild(chip));
+      }
     }
     container.appendChild(li);
   });
@@ -3032,7 +3106,8 @@ function copyButtonText(button, text) {
 
 function getCopyText(field) {
   if (field === "summary") {
-    return resultPanel.querySelector('[data-field="summary"]')?.textContent?.trim() || "";
+    const summary = resultPanel.querySelector('[data-field="summary"]');
+    return summary?.dataset.copyText || summary?.textContent?.trim() || "";
   }
   if (field === "keyIdeas") {
     return listCopyText(resultPanel.querySelector('[data-field="keyIdeas"]'));

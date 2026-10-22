@@ -3076,6 +3076,28 @@ li {
   box-shadow: var(--soft-shadow);
 }
 
+.citation-chip {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  border: 1px solid rgba(0, 113, 227, 0.28);
+  border-radius: 999px;
+  background: rgba(0, 113, 227, 0.06);
+  color: var(--accent-dark);
+  font: inherit;
+  font-size: 0.72em;
+  line-height: 1.6;
+  vertical-align: 0.12em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.citation-chip:hover,
+.citation-chip:focus-visible {
+  border-color: var(--accent);
+  background: rgba(0, 113, 227, 0.14);
+}
+
 .evidence-viewer.active-evidence {
   border-color: rgba(0, 113, 227, 0.42);
   background: rgba(245, 250, 255, 0.92);

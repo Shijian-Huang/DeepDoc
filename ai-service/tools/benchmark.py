@@ -431,8 +431,22 @@ def check_run(record: dict[str, Any], paper: dict[str, Any], paper_text: PaperTe
             issues.append(_issue(paper_id, repeat, "invalid_evidence_reference", "evidence", _normalize(item.get("claim")),
                                  "medium", "high", "evidence construction", problem))
 
+    # Sentence-level source links shown to the user.
+    citations = summary.get("citations") if isinstance(summary.get("citations"), dict) else None
+    cited, uncited = diagnostics.get("cited_sentence_count"), diagnostics.get("uncited_sentence_count")
+    invalid_citations = 0
+    for field, entries in (citations or {}).items():
+        for entry in entries if isinstance(entries, list) else []:
+            pages = (entry or {}).get("pages") or []
+            if entry and (not pages or any(not isinstance(page, int) or page < 1 or page > paper_text.page_count for page in pages)):
+                invalid_citations += 1
+                issues.append(_issue(paper_id, repeat, "invalid_citation_pages", field, str(entry.get("text", "")),
+                                     "medium", "high", "citation mapping", f"pages: {pages}"))
+
     filtered = diagnostics.get("filtered_sentences") or []
     return {
+        "cited_share": round(cited / (cited + uncited), 4) if citations is not None and cited is not None and (cited + uncited) else None,
+        "invalid_citation_pages": invalid_citations if citations is not None else None,
         "paper_id": paper_id,
         "repeat": repeat,
         "failed": False,
@@ -512,6 +526,8 @@ METRICS = [
     ("Generated sentences removed by grounding (share)", "filtered_share", "lower", "pct"),
     ("Runs with no contributions (share)", "contributions_empty", "lower", "pct"),
     ("Evaluative words not used in the paper", "unsupported_evaluative_words", "lower", "num"),
+    ("Sentences with a source link (share)", "cited_share", "higher", "pct"),
+    ("Source links with invalid pages", "invalid_citation_pages", "lower", "num"),
     ("Summary words", "summary_words", "info", "num"),
     ("Key ideas", "key_idea_count", "info", "num"),
     ("Contributions", "contribution_count", "info", "num"),

@@ -904,7 +904,14 @@ def _facts_by_id(verified_facts: list[dict]) -> dict[str, dict]:
 SENTENCE_GROUNDING_MIN_OVERLAP = 0.3
 
 
-def _supported_sentences(text: str, fact_ids: list[str], verified_facts: list[dict], diagnostics: Optional[dict] = None, field: str = "summary") -> str:
+def _supported_sentences(
+    text: str,
+    fact_ids: list[str],
+    verified_facts: list[dict],
+    diagnostics: Optional[dict] = None,
+    field: str = "summary",
+    citation_log: Optional[list[dict]] = None,
+) -> str:
     facts = _facts_by_id(verified_facts)
     cited_facts = " ".join(
         f"{facts[fact_id].get('fact') or ''} {facts[fact_id].get('source_quote') or ''}"
@@ -923,6 +930,13 @@ def _supported_sentences(text: str, fact_ids: list[str], verified_facts: list[di
         )
         if accepted:
             supported.append(_clean_generated_sentence(sentence))
+            if citation_log is not None:
+                citation_log.append({
+                    "field": field,
+                    "text": supported[-1],
+                    "fact_ids": [fact_id for fact_id in fact_ids if fact_id in facts],
+                    "origin": "generated",
+                })
         if diagnostics is not None:
             diagnostics["checked_sentence_count"] = diagnostics.get("checked_sentence_count", 0) + 1
             if not accepted:
@@ -942,7 +956,12 @@ def _clean_generated_sentence(sentence: str) -> str:
     return cleaned
 
 
-def normalize_grounded_analysis_result(result: dict, verified_facts: list[dict], diagnostics: Optional[dict] = None) -> dict:
+def normalize_grounded_analysis_result(
+    result: dict,
+    verified_facts: list[dict],
+    diagnostics: Optional[dict] = None,
+    citation_log: Optional[list[dict]] = None,
+) -> dict:
     grounded = dict(result or {})
     paragraphs: list[str] = []
     for item in grounded.get("summary_paragraphs", []) if isinstance(grounded.get("summary_paragraphs"), list) else []:
@@ -953,11 +972,13 @@ def normalize_grounded_analysis_result(result: dict, verified_facts: list[dict],
             [str(fact_id) for fact_id in item.get("fact_ids", [])],
             verified_facts,
             diagnostics=diagnostics,
+            citation_log=citation_log,
         )
         if paragraph:
             paragraphs.append(paragraph)
     grounded["summary"] = "\n\n".join(paragraphs)
 
+    facts = _facts_by_id(verified_facts)
     for field in ("key_ideas", "contributions"):
         supported_items: list[str] = []
         raw_items = grounded.get(field, [])
@@ -965,28 +986,47 @@ def normalize_grounded_analysis_result(result: dict, verified_facts: list[dict],
             for item in raw_items:
                 if not isinstance(item, dict):
                     continue
+                fact_ids = [str(fact_id) for fact_id in item.get("fact_ids", [])]
                 supported = _supported_sentences(
                     str(item.get("text") or ""),
-                    [str(fact_id) for fact_id in item.get("fact_ids", [])],
+                    fact_ids,
                     verified_facts,
                     diagnostics=diagnostics,
                     field=field,
                 )
                 if supported:
                     supported_items.append(supported)
+                    if citation_log is not None:
+                        citation_log.append({
+                            "field": field,
+                            "text": supported,
+                            "fact_ids": [fact_id for fact_id in fact_ids if fact_id in facts],
+                            "origin": "generated",
+                        })
         grounded[field] = supported_items
     if not grounded.get("key_ideas"):
         preferred_categories = ("research_question", "method", "result", "conclusion")
-        grounded["key_ideas"] = [
-            str(fact.get("fact") or "")
+        fallback_facts = [
+            fact
             for category in preferred_categories
             for fact in verified_facts
             if fact.get("category") == category and 20 <= len(str(fact.get("fact") or "")) <= 260
         ][:4]
+        grounded["key_ideas"] = [str(fact.get("fact") or "") for fact in fallback_facts]
+        if citation_log is not None:
+            citation_log.extend(
+                {"field": "key_ideas", "text": str(fact.get("fact") or ""), "fact_ids": [str(fact.get("fact_id"))], "origin": "source_fact"}
+                for fact in fallback_facts
+            )
     return grounded
 
 
-def supplement_short_summary(result: dict, verified_facts: list[dict], summary_mode: str) -> None:
+def supplement_short_summary(
+    result: dict,
+    verified_facts: list[dict],
+    summary_mode: str,
+    citation_log: Optional[list[dict]] = None,
+) -> None:
     """Prefer adding verified atomic facts over asking the model to invent filler."""
     minimum = SUMMARY_MODE_MIN_WORDS[summary_mode]
     summary = str(result.get("summary") or "").strip()
@@ -1015,10 +1055,81 @@ def supplement_short_summary(result: dict, verified_facts: list[dict], summary_m
         if coverage >= 0.5 or any(_is_near_duplicate(text, item) for item in existing + additions):
             continue
         additions.append(_clean_generated_sentence(text))
+        if citation_log is not None:
+            citation_log.append({
+                "field": "summary",
+                "text": additions[-1],
+                "fact_ids": [str(fact.get("fact_id"))],
+                "origin": "source_fact",
+            })
         if count_words("\n\n".join(existing + additions)) >= minimum:
             break
     if additions:
         result["summary"] = f"{summary} {' '.join(additions)}".strip()
+
+
+def _citation_key(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().rstrip(".!? ").lower()
+
+
+def build_sentence_citations(
+    result: dict,
+    citation_log: list[dict],
+    verified_facts: list[dict],
+    evidence_sources: list[dict],
+    diagnostics: Optional[dict] = None,
+) -> dict:
+    """Map each final summary sentence and list item back to the facts and sources it was written from."""
+    facts = _facts_by_id(verified_facts)
+    sources = _source_map(evidence_sources)
+    logged: dict[str, dict[str, dict]] = {}
+    for entry in citation_log:
+        logged.setdefault(entry["field"], {}).setdefault(_citation_key(entry["text"]), entry)
+
+    def cite(text: str, field: str) -> Optional[dict]:
+        entries = logged.get(field, {})
+        parts = [entries.get(_citation_key(text))]
+        if parts[0] is None:
+            # The final text may join sentences that grounding saw separately.
+            parts = [entries.get(_citation_key(part)) for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+        if not parts or any(part is None for part in parts):
+            return None
+        fact_ids = list(dict.fromkeys(fact_id for part in parts for fact_id in part["fact_ids"] if fact_id in facts))
+        source_ids = list(dict.fromkeys(
+            source_id for fact_id in fact_ids for source_id in facts[fact_id].get("source_ids", []) if source_id in sources
+        ))
+        pages = sorted({page for source_id in source_ids for page in sources[source_id].get("pages", []) if isinstance(page, int)})
+        quotes = list(dict.fromkeys(str(facts[fact_id].get("source_quote") or "") for fact_id in fact_ids))
+        return {
+            "text": text,
+            "origin": "source_fact" if all(part["origin"] == "source_fact" for part in parts) else "generated",
+            "fact_ids": fact_ids,
+            "source_ids": source_ids,
+            "pages": pages,
+            "quotes": [quote for quote in quotes if quote][:3],
+        }
+
+    citations: dict[str, list] = {"summary": [], "key_ideas": [], "contributions": []}
+    uncited = 0
+    for index, paragraph in enumerate(re.split(r"\n\s*\n+", str(result.get("summary") or ""))):
+        for sentence in _split_sentences(paragraph):
+            citation = cite(sentence, "summary")
+            if citation is None:
+                uncited += 1
+                continue
+            citation["paragraph"] = index
+            citations["summary"].append(citation)
+    for field in ("key_ideas", "contributions"):
+        for item in result.get(field) or []:
+            citation = cite(str(item), field)
+            uncited += citation is None
+            citations[field].append(citation)
+    if diagnostics is not None:
+        diagnostics["cited_sentence_count"] = len(citations["summary"]) + sum(
+            1 for field in ("key_ideas", "contributions") for item in citations[field] if item
+        )
+        diagnostics["uncited_sentence_count"] = uncited
+    return citations
 
 
 def extract_verified_facts(evidence_packet: str, evidence_sources: list[dict], diagnostics: Optional[dict] = None) -> list[dict]:
@@ -1198,11 +1309,13 @@ def summarize_research_paper(
             }
         diagnostics["stage_seconds"]["generation"] = round(time.perf_counter() - generation_started, 4)
         processing_started = time.perf_counter()
-        result = normalize_grounded_analysis_result(result, verified_facts, diagnostics=diagnostics)
-        supplement_short_summary(result, verified_facts, normalized_mode)
+        citation_log: list[dict] = []
+        result = normalize_grounded_analysis_result(result, verified_facts, diagnostics=diagnostics, citation_log=citation_log)
+        supplement_short_summary(result, verified_facts, normalized_mode, citation_log=citation_log)
         result = normalize_research_summary_result(result, normalized_mode)
         word_count = result["summary_word_count"]
         _normalize_grounded_evidence(result, verified_facts, sources)
+        result["citations"] = build_sentence_citations(result, citation_log, verified_facts, sources, diagnostics=diagnostics)
         diagnostics["stage_seconds"]["postprocessing"] = round(time.perf_counter() - processing_started, 4)
         diagnostics["deterministic_fallback"] = used_deterministic_fallback
         diagnostics["total_seconds"] = round(time.perf_counter() - started_at, 4)
