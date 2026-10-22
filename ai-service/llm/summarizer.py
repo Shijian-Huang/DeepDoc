@@ -708,9 +708,15 @@ def build_fact_extraction_prompt(evidence_packet: str, compact: bool = False) ->
     - Do not infer causality, novelty, significance, intent, implications, or internal mental states.
     - If the paper does not state something, omit it. Never fill a gap from general knowledge.
     - {retry_instruction}
-    - MUST extract separate facts for every reported model/sample count and every filtering stage.
+    - Cover the paper's core content before details. When the sources state them, include:
+      at least one research_question fact (the problem and why it matters),
+      at least two contribution facts (what this paper itself proposes, builds, or shows),
+      at least two method facts describing the core idea of the approach,
+      the main result facts, and one conclusion or limitation fact.
+    - Abstract and introduction sources are valid evidence for the problem and contributions.
+    - Add implementation details (hyperparameters, dimensions, training schedules, hardware) only after the core content is covered.
+    - Extract sample/model counts and filtering stages when they are central to the findings, one stage per fact.
     - Extract the main aggregate results and at most two decision-relevant model comparisons from tables.
-    - Prefer methods, results, tables, and limitations over generic background.
     - Never extract metric formulas or textbook definitions unless the formula is the paper's central contribution.
     - Do not enumerate every model or every row of a results table.
     - Keep fact under 280 characters and source_quote under 320 characters.

@@ -265,6 +265,15 @@ class LlmProviderTests(unittest.TestCase):
         self.assertEqual(generate.call_count, 2)
         self.assertIn("compact retry", generate.call_args.args[0])
 
+    def test_fact_extraction_prompt_asks_for_core_content_before_details(self):
+        for compact in (False, True):
+            prompt = summarizer.build_fact_extraction_prompt("source packet", compact=compact)
+            self.assertIn("at least one research_question fact", prompt)
+            self.assertIn("at least two contribution facts", prompt)
+            self.assertIn("implementation details", prompt)
+            self.assertLess(prompt.index("contribution facts"), prompt.index("implementation details"))
+            self.assertNotIn("MUST extract separate facts for every reported model/sample count", prompt)
+
     def test_unknown_provider_is_rejected(self):
         with patch.object(summarizer, "llm_provider", "unknown"):
             self.assertFalse(summarizer.is_llm_configured())
