@@ -39,6 +39,22 @@ class PipelineDiagnosticsTests(unittest.TestCase):
         self.assertFalse(summarizer._claim_supported_by_text("The model achieved 95% accuracy.", source))
         self.assertFalse(summarizer._claim_supported_by_text("The model achieved the highest accuracy.", source))
 
+    def test_grounding_keeps_paraphrases_and_rejects_distortions(self):
+        fact = {
+            "fact_id": "fact_01",
+            "fact": "The big transformer model outperforms the best previously reported models (including ensembles) by more than 2.0 BLEU on WMT 2014 English-to-German, establishing a new state-of-the-art BLEU score of 28.4.",
+            "source_quote": "On the WMT 2014 English-to-German translation task, the big transformer model (Transformer (big) in Table 2) outperforms the best previously reported models (including ensembles) by more than 2.0 BLEU, establishing a new state-of-the-art BLEU score of 28.4.",
+        }
+        cases = {
+            "The larger Transformer set a new record of 28.4 BLEU for English-German translation, beating earlier systems and ensembles by over 2.0 points.": True,
+            "The big transformer model reaches 29.4 BLEU on the WMT 2014 English-to-German translation task.": False,
+            "The big transformer model underperforms the best previously reported models on WMT 2014 English-to-German by 2.0 BLEU.": False,
+            "This breakthrough fundamentally transforms how researchers approach machine translation tasks.": False,
+        }
+        for sentence, expected in cases.items():
+            with self.subTest(sentence=sentence):
+                self.assertEqual(bool(summarizer._supported_sentences(sentence, ["fact_01"], [fact])), expected)
+
     def test_retry_and_fallback_are_recorded(self):
         text = "The study evaluates a retrieval method on three datasets."
         sources = [{"source_id": "p1", "excerpt": text, "pages": [1], "section": "method"}]

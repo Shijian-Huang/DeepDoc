@@ -594,6 +594,7 @@ def _claim_supported_by_text(claim: str, source_text: str, min_overlap: float = 
         "causes", "caused", "leads to", "responsible deployment", "internal representation",
         "highest", "lowest", "best", "worst", "outperform", "outperforms",
         "higher than", "lower than", "greater than", "less than",
+        "underperform", "worse", "inferior", "fails to", "failed to", "does not", "did not", "cannot",
     )
     normalized_claim = _normalized_match_text(claim)
     normalized_source = _normalized_match_text(source_text)
@@ -890,13 +891,18 @@ def _facts_by_id(verified_facts: list[dict]) -> dict[str, dict]:
     }
 
 
+# Generated sentences paraphrase their cited facts, so require less word overlap than
+# fact verification does; numbers and high-risk terms are still checked strictly.
+SENTENCE_GROUNDING_MIN_OVERLAP = 0.3
+
+
 def _supported_sentences(text: str, fact_ids: list[str], verified_facts: list[dict], diagnostics: Optional[dict] = None, field: str = "summary") -> str:
     facts = _facts_by_id(verified_facts)
     cited_facts = " ".join(
-        str(facts[fact_id].get("fact") or "")
+        f"{facts[fact_id].get('fact') or ''} {facts[fact_id].get('source_quote') or ''}"
         for fact_id in fact_ids
         if fact_id in facts
-    )
+    ).strip()
     sentences = [
         sentence.strip()
         for sentence in re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", str(text or "")).strip())
@@ -904,7 +910,9 @@ def _supported_sentences(text: str, fact_ids: list[str], verified_facts: list[di
     ]
     supported = []
     for sentence in sentences:
-        accepted = bool(cited_facts) and _claim_supported_by_text(sentence, cited_facts, min_overlap=0.5)
+        accepted = bool(cited_facts) and _claim_supported_by_text(
+            sentence, cited_facts, min_overlap=SENTENCE_GROUNDING_MIN_OVERLAP
+        )
         if accepted:
             supported.append(_clean_generated_sentence(sentence))
         if diagnostics is not None:
