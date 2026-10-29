@@ -73,6 +73,7 @@ from video_generator import (
     VideoGenerationError,
     generate_video_from_script,
 )
+from evaluation.dashboard import router as evaluator_router
 
 APP_VERSION = "per-user-model-20260819"
 VIDEO_ENABLED = os.getenv("VIDEO_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -81,6 +82,7 @@ app = FastAPI(
     title="DeepDoc",
     description="AI-powered research paper analysis service.",
 )
+app.include_router(evaluator_router)
 
 
 @app.exception_handler(AnalysisCancelled)

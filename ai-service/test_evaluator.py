@@ -3,10 +3,19 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from llm.evaluator import EvidencePacket, EvaluationError, SummaryEvaluator, _extract_json
+from llm.evaluator import (
+    EvidencePacket,
+    EvaluationError,
+    GeminiJudge,
+    SummaryEvaluator,
+    _coverage_score,
+    _extract_json,
+    build_evaluation_prompt,
+)
 from utils.summary_prompt import build_research_summary_prompt
 
 
@@ -43,6 +52,23 @@ class SummaryEvaluatorTests(unittest.TestCase):
             json.loads(_extract_json('{"status": "ok"}\n{"extra": true}')),
             {"status": "ok"},
         )
+
+    def test_judge_cache_identity_tracks_model_prompt_and_configuration(self):
+        judge = GeminiJudge(model="judge-a", api_key="unused")
+        original = judge.cache_identity
+
+        judge.model = "judge-b"
+        self.assertNotEqual(judge.cache_identity, original)
+
+        judge.model = "judge-a"
+        with patch(
+            "llm.evaluator.build_evaluation_prompt",
+            return_value="changed evaluation prompt",
+        ):
+            self.assertNotEqual(judge.cache_identity, original)
+
+        with patch("llm.evaluator.JUDGE_TEMPERATURE", 0.25):
+            self.assertNotEqual(judge.cache_identity, original)
 
     def test_default_mode_calculates_scores_for_each_model_and_packet(self):
         evaluator = SummaryEvaluator(
@@ -199,6 +225,115 @@ class SummaryEvaluatorTests(unittest.TestCase):
 
         self.assertEqual(evaluation["hallucination_score"], 1.0)
         self.assertEqual(evaluation["avg_score"], 0.0)
+
+    def test_empty_incomplete_and_malformed_judgments_are_rejected(self):
+        invalid_judgments = (
+            {},
+            {
+                "key_ideas": {},
+                "contributions": {},
+                "hallucinated_claims": [],
+                "total_summary_claims": 0,
+            },
+            {
+                "key_ideas": {
+                    "covered": 1,
+                    "partial_covered": 0,
+                    "expected": 1,
+                    "missing": [],
+                },
+                "contributions": {
+                    "covered": 0,
+                    "partial_covered": 0,
+                    "expected": 1,
+                    "missing": [],
+                },
+                "hallucinated_claims": [],
+                "total_summary_claims": 1,
+            },
+            {
+                "key_ideas": {
+                    "covered": "1",
+                    "partial_covered": 0,
+                    "expected": 1,
+                    "missing": [],
+                },
+                "contributions": {
+                    "covered": 1,
+                    "partial_covered": 0,
+                    "expected": 1,
+                    "missing": [],
+                },
+                "hallucinated_claims": [],
+                "total_summary_claims": 1,
+            },
+        )
+
+        for judgment in invalid_judgments:
+            with self.subTest(judgment=judgment):
+                class InvalidJudge:
+                    def evaluate(inner_self, summary, evidence_packet):
+                        return judgment
+
+                with self.assertRaises(EvaluationError):
+                    SummaryEvaluator(
+                        {"model-a": "Summary"},
+                        [self.packet],
+                        judge=InvalidJudge(),
+                    ).evaluate()
+
+    def test_zero_expected_dimensions_are_rejected_in_every_mode(self):
+        valid_dimension = {
+            "covered": 1,
+            "partial_covered": 0,
+            "expected": 1,
+            "missing": [],
+        }
+        zero_dimension = {
+            "covered": 0,
+            "partial_covered": 0,
+            "expected": 0,
+            "missing": [],
+        }
+
+        for field in ("key_ideas", "contributions"):
+            for mode in ("default", "detailed", "average"):
+                with self.subTest(field=field, mode=mode):
+                    judgment = {
+                        "key_ideas": dict(valid_dimension),
+                        "contributions": dict(valid_dimension),
+                        "hallucinated_claims": [],
+                        "total_summary_claims": 1,
+                    }
+                    judgment[field] = dict(zero_dimension)
+
+                    class ZeroExpectedJudge:
+                        def evaluate(inner_self, summary, evidence_packet):
+                            return judgment
+
+                    with self.assertRaisesRegex(
+                        EvaluationError,
+                        rf"{field}\.expected must be greater than zero",
+                    ):
+                        SummaryEvaluator(
+                            {"model-a": "Summary"},
+                            [self.packet],
+                            judge=ZeroExpectedJudge(),
+                        ).evaluate(mode)
+
+    def test_coverage_score_defensively_rejects_zero_expected(self):
+        with self.assertRaisesRegex(EvaluationError, "expected is not greater than zero"):
+            _coverage_score({
+                "covered": 0,
+                "partial_covered": 0,
+                "expected": 0,
+            })
+
+    def test_evaluation_prompt_requires_positive_expected_counts(self):
+        prompt = build_evaluation_prompt("Summary", self.packet)
+
+        self.assertIn("must never be zero", prompt)
+        self.assertNotIn('"expected": 0', prompt)
 
     def test_average_mode_saves_visualization_in_evaluation_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
