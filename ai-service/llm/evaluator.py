@@ -51,7 +51,7 @@ SCORE_FIELDS = (
     "hallucination_score",
 )
 
-EVALUATION_PIPELINE_VERSION = "2"
+EVALUATION_PIPELINE_VERSION = "3"
 JUDGE_RESPONSE_MIME_TYPE = "application/json"
 JUDGE_TEMPERATURE = 0
 
@@ -257,19 +257,21 @@ Mark an item covered only when its meaning is represented accurately, partial
 when it is present but materially incomplete, and missing otherwise. Identify
 every externally verifiable claim in the summary that is unsupported by or
 contradicts this packet. Do not count harmless wording differences as errors.
+The expected count for both key_ideas and contributions must be a positive
+integer and must never be zero.
 
 Return ONLY valid JSON with exactly this internal assessment shape:
 {{
   "key_ideas": {{
     "covered": 0,
     "partial_covered": 0,
-    "expected": 0,
+    "expected": 1,
     "missing": ["description of each missing idea"]
   }},
   "contributions": {{
     "covered": 0,
     "partial_covered": 0,
-    "expected": 0,
+    "expected": 1,
     "missing": ["description of each missing contribution"]
   }},
   "hallucinated_claims": [
@@ -392,6 +394,10 @@ def _normalize_dimension(value: Any, path: str) -> dict[str, Any]:
     partial = _nonnegative_int(value["partial_covered"], f"{path}.partial_covered")
     expected = _nonnegative_int(value["expected"], f"{path}.expected")
     missing = _missing_items(value["missing"], f"{path}.missing")
+    if expected == 0:
+        raise EvaluationError(
+            f"The judge response is malformed: {path}.expected must be greater than zero."
+        )
     if covered + partial + len(missing) != expected:
         raise EvaluationError(
             f"The judge response is malformed: {path}.expected must equal covered, "
@@ -456,8 +462,10 @@ def _normalize_judgment(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _coverage_score(dimension: Mapping[str, Any]) -> float:
     expected = int(dimension["expected"])
-    if expected == 0:
-        return 1.0
+    if expected <= 0:
+        raise EvaluationError(
+            "Cannot calculate coverage when expected is not greater than zero."
+        )
     return min(1.0, (int(dimension["covered"]) + 0.5 * int(dimension["partial_covered"])) / expected)
 
 

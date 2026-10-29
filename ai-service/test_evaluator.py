@@ -12,7 +12,9 @@ from llm.evaluator import (
     EvaluationError,
     GeminiJudge,
     SummaryEvaluator,
+    _coverage_score,
     _extract_json,
+    build_evaluation_prompt,
 )
 from utils.summary_prompt import build_research_summary_prompt
 
@@ -279,6 +281,59 @@ class SummaryEvaluatorTests(unittest.TestCase):
                         [self.packet],
                         judge=InvalidJudge(),
                     ).evaluate()
+
+    def test_zero_expected_dimensions_are_rejected_in_every_mode(self):
+        valid_dimension = {
+            "covered": 1,
+            "partial_covered": 0,
+            "expected": 1,
+            "missing": [],
+        }
+        zero_dimension = {
+            "covered": 0,
+            "partial_covered": 0,
+            "expected": 0,
+            "missing": [],
+        }
+
+        for field in ("key_ideas", "contributions"):
+            for mode in ("default", "detailed", "average"):
+                with self.subTest(field=field, mode=mode):
+                    judgment = {
+                        "key_ideas": dict(valid_dimension),
+                        "contributions": dict(valid_dimension),
+                        "hallucinated_claims": [],
+                        "total_summary_claims": 1,
+                    }
+                    judgment[field] = dict(zero_dimension)
+
+                    class ZeroExpectedJudge:
+                        def evaluate(inner_self, summary, evidence_packet):
+                            return judgment
+
+                    with self.assertRaisesRegex(
+                        EvaluationError,
+                        rf"{field}\.expected must be greater than zero",
+                    ):
+                        SummaryEvaluator(
+                            {"model-a": "Summary"},
+                            [self.packet],
+                            judge=ZeroExpectedJudge(),
+                        ).evaluate(mode)
+
+    def test_coverage_score_defensively_rejects_zero_expected(self):
+        with self.assertRaisesRegex(EvaluationError, "expected is not greater than zero"):
+            _coverage_score({
+                "covered": 0,
+                "partial_covered": 0,
+                "expected": 0,
+            })
+
+    def test_evaluation_prompt_requires_positive_expected_counts(self):
+        prompt = build_evaluation_prompt("Summary", self.packet)
+
+        self.assertIn("must never be zero", prompt)
+        self.assertNotIn('"expected": 0', prompt)
 
     def test_average_mode_saves_visualization_in_evaluation_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -57,7 +57,22 @@ class InvalidJudge:
     cache_identity = "invalid-judge"
 
     def evaluate(self, summary, evidence_packet):
-        return {}
+        return {
+            "key_ideas": {
+                "covered": 0,
+                "partial_covered": 0,
+                "expected": 0,
+                "missing": [],
+            },
+            "contributions": {
+                "covered": 1,
+                "partial_covered": 0,
+                "expected": 1,
+                "missing": [],
+            },
+            "hallucinated_claims": [],
+            "total_summary_claims": 1,
+        }
 
 
 class DashboardEvaluatorTests(unittest.TestCase):
@@ -204,12 +219,12 @@ class DashboardEvaluatorTests(unittest.TestCase):
         self.assertTrue(result["partial"])
         self.assertEqual(result["error_count"], 2)
         self.assertTrue(all("error" in row for row in result["results"]))
-        self.assertIn("judge response is incomplete", result["results"][0]["error"])
+        self.assertIn("expected must be greater than zero", result["results"][0]["error"])
 
     def test_invalid_judge_response_raises_for_a_single_pair(self):
         self.dashboard.judge = InvalidJudge()
 
-        with self.assertRaisesRegex(EvaluationError, "judge response is incomplete"):
+        with self.assertRaisesRegex(EvaluationError, "expected must be greater than zero"):
             self.dashboard.evaluate(["Model A"], ["paper-a"], "standard")
 
     def test_text_upload_is_processed_into_an_evidence_packet(self):
