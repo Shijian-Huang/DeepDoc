@@ -384,7 +384,7 @@ dashboard_evaluator = DashboardEvaluator.configured()
 
 
 @router.get("/evaluator-dashboard", include_in_schema=False)
-async def evaluator_dashboard_page():
+def evaluator_dashboard_page():
     return FileResponse(
         STATIC_DIR / "evaluator.html",
         headers={"Cache-Control": "no-cache"},
@@ -392,12 +392,12 @@ async def evaluator_dashboard_page():
 
 
 @router.get("/api/evaluator/config")
-async def evaluator_configuration():
+def evaluator_configuration():
     return dashboard_evaluator.configuration()
 
 
 @router.post("/api/evaluator/evaluate")
-async def evaluate_selection(request: DashboardRequest):
+def evaluate_selection(request: DashboardRequest):
     try:
         return dashboard_evaluator.evaluate(
             request.model_names,
@@ -412,7 +412,7 @@ async def evaluate_selection(request: DashboardRequest):
 
 
 @router.post("/api/evaluator/custom")
-async def evaluate_custom_summary(
+def evaluate_custom_summary(
     paper: UploadFile = File(...),
     summary: str = Form(...),
     summary_mode: str = Form("standard"),
@@ -427,7 +427,7 @@ async def evaluate_custom_summary(
         selected_models = json.loads(model_names)
         if not isinstance(selected_models, list):
             raise ValueError("model_names must be a JSON array.")
-        content = await paper.read(MAX_UPLOAD_BYTES + 1)
+        content = paper.file.read(MAX_UPLOAD_BYTES + 1)
         if len(content) > MAX_UPLOAD_BYTES:
             raise ValueError("The reference paper exceeds the 30 MB upload limit.")
         if not content:
