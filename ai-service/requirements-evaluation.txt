@@ -1,0 +1,4 @@
+# Install in addition to the root requirements.txt for SummaryEvaluator.
+minicheck @ git+https://github.com/Liyan06/MiniCheck.git@main
+accelerate
+sentencepiece

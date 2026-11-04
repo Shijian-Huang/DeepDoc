@@ -40,6 +40,76 @@ class EvaluationJudge(Protocol):
         ...
 
 
+class FactChecker(Protocol):
+    def check(self, summary: str, evidence_packet: EvidencePacket) -> Mapping[str, Any]:
+        ...
+
+
+class MiniCheckFactChecker:
+    """Lazy, reusable MiniCheck-Flan-T5-Large sentence-level scorer."""
+
+    def __init__(
+        self,
+        *,
+        scorer: Any | None = None,
+        sentence_splitter: Callable[[str], Sequence[str]] | None = None,
+        cache_dir: str | None = None,
+        batch_size: int = 16,
+    ) -> None:
+        self._scorer = scorer
+        self._sentence_splitter = sentence_splitter
+        self._cache_dir = cache_dir or os.getenv("MINICHECK_CACHE_DIR")
+        self._batch_size = batch_size
+
+    def _get_scorer(self) -> Any:
+        if self._scorer is None:
+            from minicheck.minicheck import MiniCheck
+
+            self._scorer = MiniCheck(
+                model_name="flan-t5-large",
+                cache_dir=self._cache_dir,
+                batch_size=self._batch_size,
+            )
+        return self._scorer
+
+    def check(self, summary: str, evidence_packet: EvidencePacket) -> Mapping[str, Any]:
+        try:
+            splitter = self._sentence_splitter
+            if splitter is None:
+                from nltk.tokenize import sent_tokenize
+
+                splitter = sent_tokenize
+            # Preserve short sentences, repeated sentences, and unpunctuated tails.
+            sentences = [sentence.strip() for sentence in splitter(summary) if sentence.strip()]
+            labels = []
+            if sentences:
+                labels, _, _, _ = self._get_scorer().score(
+                    docs=[evidence_packet.text] * len(sentences),
+                    claims=sentences,
+                )
+        except ImportError as error:
+            raise EvaluationError(
+                "MiniCheck dependencies are required: pip install -r "
+                "ai-service/requirements-evaluation.txt"
+            ) from error
+        except LookupError as error:
+            raise EvaluationError(
+                "MiniCheck requires NLTK sentence data: python -m nltk.downloader punkt punkt_tab"
+            ) from error
+        except Exception as error:
+            raise EvaluationError(f"MiniCheck fact checking failed: {error}") from error
+        if len(labels) != len(sentences) or any(label not in (0, 1) for label in labels):
+            raise EvaluationError("MiniCheck must return exactly one binary label per sentence.")
+        sentence_labels = {str(index): int(label) for index, label in enumerate(labels)}
+        supported = sum(sentence_labels.values())
+        return {
+            "sentence_labels": sentence_labels,
+            "total_sentences": len(sentences),
+            "supported_sentences": supported,
+            "unsupported_sentences": len(sentences) - supported,
+        }
+
+
 SummaryValue = str | Mapping[str, Any]
 SummaryProvider = SummaryValue | Callable[[str], SummaryValue]
 SummaryGenerator = Callable[[str, str], SummaryValue]
@@ -146,6 +216,7 @@ class SummaryEvaluator:
         evidence_packets: Sequence[str | Mapping[str, Any] | EvidencePacket] | None = None,
         *,
         judge: EvaluationJudge | None = None,
+        fact_checker: FactChecker | None = None,
         summary_generator: SummaryGenerator | None = None,
         summary_mode: str = "standard",
         default_packets_path: str | Path | None = None,
@@ -153,6 +224,7 @@ class SummaryEvaluator:
     ) -> None:
         self._model_sources = _normalize_models(models, summary_generator)
         self._judge = judge or GeminiJudge()
+        self._fact_checker = fact_checker if fact_checker is not None else MiniCheckFactChecker()
         self._summary_generator = summary_generator
         self._summary_mode = normalize_summary_mode(summary_mode)
         self._default_packets_path = Path(default_packets_path or DEFAULT_PACKETS_PATH)
@@ -176,6 +248,7 @@ class SummaryEvaluator:
         for model_name, source in self._model_sources.items():
             for packet in self._packets:
                 summary = self._resolve_summary(model_name, source, packet)
+                fact_check = dict(self._fact_checker.check(summary, packet))
                 judgment = _normalize_judgment(self._judge.evaluate(summary, packet))
                 evaluation = (
                     _detailed_result(judgment)
@@ -186,6 +259,7 @@ class SummaryEvaluator:
                     "model": model_name,
                     "packet_id": packet.id,
                     "evaluation": evaluation,
+                    "fact_check": fact_check,
                 })
 
         if mode != "average":
@@ -504,6 +578,10 @@ def _average_results(packet_results: Sequence[Mapping[str, Any]]) -> list[dict[s
             "model": model_name,
             "packet_count": len(evaluations),
             "evaluation": averaged,
+            "fact_checks": [
+                {"packet_id": item["packet_id"], "fact_check": item["fact_check"]}
+                for item in packet_results if str(item["model"]) == model_name
+            ],
         })
     return results
 
@@ -517,6 +595,7 @@ def _group_packet_results_by_model(
         grouped.setdefault(str(item["model"]), []).append({
             "packet_id": str(item["packet_id"]),
             "evaluation": item["evaluation"],
+            "fact_check": item["fact_check"],
         })
     return grouped
 

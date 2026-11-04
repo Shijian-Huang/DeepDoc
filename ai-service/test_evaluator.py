@@ -3,7 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -11,6 +11,7 @@ from llm.evaluator import (
     EvidencePacket,
     EvaluationError,
     GeminiJudge,
+    MiniCheckFactChecker,
     SummaryEvaluator,
     _coverage_score,
     _extract_json,
@@ -46,6 +47,15 @@ class FakeJudge:
 class SummaryEvaluatorTests(unittest.TestCase):
     def setUp(self):
         self.packet = EvidencePacket("paper-section", "Ground-truth paper excerpt.")
+        self.fact_check = {
+            "sentence_labels": {"0": 1},
+            "total_sentences": 1,
+            "supported_sentences": 1,
+            "unsupported_sentences": 0,
+        }
+        checker_patch = patch.object(MiniCheckFactChecker, "check", return_value=self.fact_check)
+        self.checker = checker_patch.start()
+        self.addCleanup(checker_patch.stop)
 
     def test_extract_json_ignores_trailing_model_output(self):
         self.assertEqual(
@@ -84,6 +94,7 @@ class SummaryEvaluatorTests(unittest.TestCase):
         self.assertEqual(len(result["model-b"]), 2)
         self.assertEqual(result["model-a"][0], {
             "packet_id": "paper-section",
+            "fact_check": self.fact_check,
             "evaluation": {
                 "avg_score": 0.5196,
                 "key_ideas_score": 0.7,
@@ -199,6 +210,10 @@ class SummaryEvaluatorTests(unittest.TestCase):
         self.assertEqual(result["results"][0], {
             "model": "model-a",
             "packet_count": 2,
+            "fact_checks": [
+                {"packet_id": "complete", "fact_check": self.fact_check},
+                {"packet_id": "empty", "fact_check": self.fact_check},
+            ],
             "evaluation": {
                 "avg_score": 0.5,
                 "key_ideas_score": 0.5,
@@ -360,6 +375,79 @@ class SummaryEvaluatorTests(unittest.TestCase):
         )
         with self.assertRaises(EvaluationError):
             evaluator.evaluate("default", visualize=True)
+
+
+class MiniCheckTests(unittest.TestCase):
+    def test_missing_sentence_data_has_actionable_error(self):
+        splitter = Mock(side_effect=LookupError("Missing punkt_tab"))
+        checker = MiniCheckFactChecker(sentence_splitter=splitter)
+        with self.assertRaisesRegex(EvaluationError, "nltk.downloader punkt punkt_tab"):
+            checker.check("Claim.", EvidencePacket("p", "Evidence."))
+
+    def test_scorer_failure_is_reported_as_evaluation_error(self):
+        scorer = Mock()
+        scorer.score.side_effect = RuntimeError("inference failed")
+        checker = MiniCheckFactChecker(scorer=scorer, sentence_splitter=lambda _: ["Claim."])
+        with self.assertRaisesRegex(EvaluationError, "MiniCheck fact checking failed"):
+            checker.check("Claim.", EvidencePacket("p", "Evidence."))
+
+    def test_checks_every_sentence_against_full_packet_and_serializes_labels(self):
+        sentences = ["It works.", "It fails!", "It works.", "An unfinished tail"]
+        scorer = Mock()
+        scorer.score.return_value = ([1, 0, 1, 0], [], [], [])
+        splitter = Mock(return_value=sentences)
+        checker = MiniCheckFactChecker(scorer=scorer, sentence_splitter=splitter)
+        packet = EvidencePacket("long", "Full packet. " * 1500)
+        result = checker.check("Summary", packet)
+        splitter.assert_called_once_with("Summary")
+        scorer.score.assert_called_once_with(docs=[packet.text] * 4, claims=sentences)
+        self.assertEqual(json.loads(json.dumps(result)), {
+            "sentence_labels": {"0": 1, "1": 0, "2": 1, "3": 0},
+            "total_sentences": 4,
+            "supported_sentences": 2,
+            "unsupported_sentences": 2,
+        })
+
+    def test_rejects_missing_and_invalid_labels(self):
+        for labels in ([], [1, 0], [2], [0.5]):
+            with self.subTest(labels=labels):
+                scorer = Mock()
+                scorer.score.return_value = (labels, [], [], [])
+                checker = MiniCheckFactChecker(scorer=scorer, sentence_splitter=lambda _: ["Claim."])
+                with self.assertRaises(EvaluationError):
+                    checker.check("Claim.", EvidencePacket("p", "Evidence."))
+
+    def test_initializes_requested_model_once(self):
+        import types
+
+        factory = Mock()
+        module = types.ModuleType("minicheck.minicheck")
+        module.MiniCheck = factory
+        with patch.dict(sys.modules, {"minicheck": types.ModuleType("minicheck"), "minicheck.minicheck": module}):
+            checker = MiniCheckFactChecker(cache_dir="/tmp/minicheck-test", batch_size=2)
+            self.assertIs(checker._get_scorer(), checker._get_scorer())
+        factory.assert_called_once_with(model_name="flan-t5-large", cache_dir="/tmp/minicheck-test", batch_size=2)
+
+    def test_fact_check_runs_before_judge_without_changing_inputs_or_scores(self):
+        calls = []
+        packet = EvidencePacket("p", "Original packet.")
+        class Checker:
+            def check(self, summary, evidence_packet):
+                calls.append(("check", summary, evidence_packet))
+                return {"sentence_labels": {"0": 0}, "total_sentences": 1,
+                        "supported_sentences": 0, "unsupported_sentences": 1}
+        class Judge(FakeJudge):
+            def evaluate(self, summary, evidence_packet):
+                calls.append(("judge", summary, evidence_packet))
+                return super().evaluate(summary, evidence_packet)
+        for mode in ("default", "detailed", "average"):
+            result = SummaryEvaluator({"m": "Original summary."}, [packet], judge=Judge(), fact_checker=Checker()).evaluate(mode)
+            json.dumps(result, allow_nan=False)
+            if mode == "default":
+                self.assertEqual(result["m"][0]["evaluation"]["hallucination_score"], 0.1429)
+                self.assertEqual(result["m"][0]["fact_check"]["unsupported_sentences"], 1)
+        self.assertEqual(calls, [(stage, "Original summary.", packet)
+                                 for _ in range(3) for stage in ("check", "judge")])
 
 
 if __name__ == "__main__":

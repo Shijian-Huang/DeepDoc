@@ -97,6 +97,24 @@ models against evidence packets. Gemini is the default judge; pass any object
 with an `evaluate(summary, evidence_packet)` method to replace it with another
 remote or local judge.
 
+Each evaluation first checks every summary sentence against its evidence packet
+using [MiniCheck-Flan-T5-Large](https://huggingface.co/lytang/MiniCheck-Flan-T5-Large),
+then runs the existing LLM judge with the same prompt and score calculations.
+MiniCheck labels are reported separately and do not affect judge scores.
+Install the evaluation dependencies and sentence tokenizer data before running:
+
+```bash
+pip install -r ai-service/requirements-evaluation.txt
+python -m nltk.downloader punkt punkt_tab
+```
+
+The model downloads on first use and is reused across evaluations on the same
+evaluator. Set `MINICHECK_CACHE_DIR` to choose its cache directory. MiniCheck's
+official scorer chunks long packets and checks each sentence against those
+chunks. Sentence boundaries use NLTK's English sentence tokenizer; short and
+repeated sentences are included. For testing or alternative implementations,
+pass `fact_checker` with a `check(summary, evidence_packet)` method.
+
 ```python
 from llm.evaluator import SummaryEvaluator
 
@@ -135,13 +153,27 @@ Default and detailed packet-level results are keyed by model name or ID:
 ```json
 {
   "model-a": [
-    {"packet_id": "method", "evaluation": {}}
+    {
+      "packet_id": "method",
+      "evaluation": {},
+      "fact_check": {
+        "sentence_labels": {"0": 1, "1": 0, "2": 1},
+        "total_sentences": 3,
+        "supported_sentences": 2,
+        "unsupported_sentences": 1
+      }
+    }
   ],
   "model-b": [
-    {"packet_id": "method", "evaluation": {}}
+    {"packet_id": "method", "evaluation": {}, "fact_check": {}}
   ]
 }
 ```
+
+`sentence_labels` maps zero-based sentence indices (JSON string keys) to `1`
+(supported) or `0` (unsupported). Average mode preserves the same judge score
+averages and includes a `fact_checks` list of `{packet_id, fact_check}` objects
+per model, retaining the labels for every packet.
 
 `ai-service/test_models.py` calls Gemini to list models and is an external API probe, not a normal local regression test.
 
