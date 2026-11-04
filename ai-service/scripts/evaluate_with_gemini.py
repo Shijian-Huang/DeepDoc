@@ -8,7 +8,9 @@ is omitted, the evaluator uses ``evaluation/default_packets.json``.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -55,8 +57,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--summary-model",
         help=(
-            "Gemini model used for summaries. When omitted, the summarizer's "
-            "configured fallback model list is used."
+            "Gemini model used for summaries. When omitted, the first model "
+            "in the summarizer's configured Gemini model list is used."
         ),
     )
     parser.add_argument(
@@ -65,6 +67,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Gemini model used by the judge. Defaults to GEMINI_EVALUATOR_MODEL "
             "or the evaluator's built-in default."
         ),
+    )
+    parser.add_argument(
+        "--minicheck-device",
+        choices=("cpu", "auto"),
+        default="cpu",
+        help="MiniCheck device selection; CPU avoids native CUDA initialization crashes (default: %(default)s).",
     )
     parser.add_argument(
         "--visualize",
@@ -83,6 +91,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    # MiniCheck uses device_map="auto" internally. Hide GPUs before its lazy
+    # torch import so a broken CUDA driver cannot terminate the evaluator.
+    if args.minicheck_device == "cpu":
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
     summarizer.require_gemini_api_key()
 
     summary_model = args.summary_model or summarizer.gemini_models[0]
@@ -103,6 +115,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    faulthandler.enable()
     args = parse_args(argv)
     try:
         result = run(args)

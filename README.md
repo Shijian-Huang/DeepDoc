@@ -115,6 +115,12 @@ chunks. Sentence boundaries use NLTK's English sentence tokenizer; short and
 repeated sentences are included. For testing or alternative implementations,
 pass `fact_checker` with a `check(summary, evidence_packet)` method.
 
+`scripts/evaluate_with_gemini.py` runs MiniCheck on CPU by default to avoid
+native crashes when CUDA drivers are unavailable or incompatible. Pass
+`--minicheck-device auto` to enable MiniCheck's automatic GPU selection on a
+working CUDA installation. The Hugging Face `HF_TOKEN` warning is informational;
+authentication is optional for this public model.
+
 ```python
 from llm.evaluator import SummaryEvaluator
 
