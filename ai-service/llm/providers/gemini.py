@@ -3,6 +3,8 @@ from typing import Any
 from google import genai
 from google.genai import errors, types
 
+from llm.usage import set_last_usage
+
 
 class GeminiProvider:
     def __init__(self, api_key: str | None, timeout_ms: int = 30000):
@@ -24,8 +26,16 @@ class GeminiProvider:
         del schema  # Gemini is prompted for JSON; schema enforcement is currently Ollama-only.
         if self.client is None:
             raise RuntimeError("GEMINI_API_KEY is not configured. Add it to ai-service/.env or the server environment.")
+        set_last_usage(None)
         try:
             response = self.client.models.generate_content(model=model, contents=prompt)
         except (errors.ClientError, errors.ServerError) as error:
             raise RuntimeError(str(error)) from error
+        metadata = getattr(response, "usage_metadata", None)
+        if metadata is not None:
+            set_last_usage({
+                "prompt_tokens": getattr(metadata, "prompt_token_count", None),
+                "output_tokens": getattr(metadata, "candidates_token_count", None),
+                "thinking_tokens": getattr(metadata, "thoughts_token_count", None),
+            })
         return response.text or ""

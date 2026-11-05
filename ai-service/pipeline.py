@@ -2,11 +2,25 @@ import re
 import time
 
 from llm.summarizer import active_llm_model, active_llm_provider, normalize_summary_mode, summarize_research_paper
+from llm.usage import summarize_llm_usage, track_llm_usage
 from parser.document_parser import extract_document_title, parse_document_pages
 from parser.reference_extractor import extract_references_with_diagnostics
 from utils.section_extractor import build_summary_input_from_pages
 
 def run_pipeline(file_path: str, summary_mode: str = "standard"):
+    # Track every LLM call in the run, including the reference-extraction fallback.
+    with track_llm_usage() as llm_calls:
+        try:
+            result = _run_pipeline(file_path, summary_mode)
+        except Exception as error:
+            # Failed runs also consume tokens; callers can read them from the error.
+            error.llm_usage = summarize_llm_usage(llm_calls)
+            raise
+    result["pipeline_diagnostics"]["llm_usage"] = summarize_llm_usage(llm_calls)
+    return result
+
+
+def _run_pipeline(file_path: str, summary_mode: str):
     normalized_mode = normalize_summary_mode(summary_mode)
     started = time.perf_counter()
     diagnostics = {

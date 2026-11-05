@@ -14,6 +14,7 @@ from llm.cancellation import (
     use_analysis_cancellation,
 )
 from llm.providers import GeminiProvider, OllamaProvider
+from llm.usage import TOKEN_FIELDS, record_llm_call, take_last_usage
 from utils.summary_prompt import normalize_summary_mode
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -239,7 +240,7 @@ class LLMProviderError(json.JSONDecodeError):
     """A provider/API failure, raised as a JSONDecodeError so existing retry and fallback handling still applies."""
 
 
-def generate_json(prompt: str, schema: Optional[dict] = None):
+def generate_json(prompt: str, schema: Optional[dict] = None, purpose: str = "other"):
     require_llm_configuration()
     check_analysis_cancelled()
     last_raw_text = ""
@@ -251,21 +252,33 @@ def generate_json(prompt: str, schema: Optional[dict] = None):
         wait_for_rate_limit()
 
         selected_provider = _ollama_provider() if provider == "ollama" else _gemini_provider()
+        call_started = time.perf_counter()
+        status = "provider_error"
         try:
             raw_text = selected_provider.generate_text(prompt, model, schema=schema)
+            status = "invalid_json"
+            parsed = json.loads(extract_json(raw_text))
+            status = "ok"
+            return parsed
         except AnalysisCancelled:
+            status = "cancelled"
             raise
         except RuntimeError as error:
             last_raw_text = str(error)
             provider_failed = True
-            continue
-        cleaned = extract_json(raw_text)
-
-        try:
-            return json.loads(cleaned)
         except json.JSONDecodeError:
             last_raw_text = raw_text
             provider_failed = False
+        finally:
+            record_llm_call({
+                "purpose": purpose,
+                "provider": provider,
+                "model": model,
+                "status": status,
+                "seconds": round(time.perf_counter() - call_started, 4),
+                **{field: None for field in TOKEN_FIELDS},
+                **take_last_usage(),
+            })
 
     if provider_failed:
         raise LLMProviderError("LLM provider request failed", last_raw_text, 0)
@@ -1137,7 +1150,11 @@ def extract_verified_facts(evidence_packet: str, evidence_sources: list[dict], d
         diagnostics["compact_retry"] = False
         diagnostics["compact_retry_reason"] = None
     try:
-        raw_facts = generate_json(build_fact_extraction_prompt(evidence_packet), schema=FACT_EXTRACTION_SCHEMA)
+        raw_facts = generate_json(
+            build_fact_extraction_prompt(evidence_packet),
+            schema=FACT_EXTRACTION_SCHEMA,
+            purpose="fact_extraction",
+        )
     except json.JSONDecodeError as error:
         if diagnostics is not None:
             diagnostics["compact_retry"] = True
@@ -1146,6 +1163,7 @@ def extract_verified_facts(evidence_packet: str, evidence_sources: list[dict], d
         raw_facts = generate_json(
             build_fact_extraction_prompt(evidence_packet, compact=True),
             schema=FACT_EXTRACTION_SCHEMA,
+            purpose="fact_extraction_retry",
         )
     return normalize_verified_facts(raw_facts, evidence_sources, diagnostics=diagnostics)
 
@@ -1297,7 +1315,7 @@ def summarize_research_paper(
         used_deterministic_fallback = False
         generation_started = time.perf_counter()
         try:
-            result = generate_json(prompt, schema=ANALYSIS_SCHEMA)
+            result = generate_json(prompt, schema=ANALYSIS_SCHEMA, purpose="analysis")
         except json.JSONDecodeError:
             used_deterministic_fallback = True
             result = {
@@ -2104,7 +2122,7 @@ def extract_references_llm(ref_text: str):
     """
 
     try:
-        return generate_json(prompt).get("references", [])
+        return generate_json(prompt, purpose="reference_extraction").get("references", [])
     except json.JSONDecodeError:
         return []
         

@@ -11,6 +11,7 @@ from llm import summarizer
 from llm.cancellation import AnalysisCancellationToken, AnalysisCancelled, use_analysis_cancellation
 from llm.providers.gemini import GeminiProvider
 from llm.providers.ollama import OllamaProvider
+from llm.usage import record_llm_call
 from google.genai import errors
 import pipeline
 
@@ -172,11 +173,17 @@ class PipelineDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(result["diagnostics"]["compact_retry_reason"])
 
     def test_pipeline_records_stage_timings(self):
+        def summarize(*_args, **_kwargs):
+            for purpose, prompt_tokens in (("fact_extraction", 4000), ("analysis", 1500)):
+                record_llm_call({"purpose": purpose, "seconds": 1.0, "prompt_tokens": prompt_tokens,
+                                 "output_tokens": 500, "thinking_tokens": None})
+            return {"summary": "Summary"}
+
         with (
             patch.object(pipeline, "parse_document_pages", return_value=[{"text": "paper text"}]),
             patch.object(pipeline, "extract_document_title", return_value="Title"),
             patch.object(pipeline, "build_summary_input_from_pages", return_value=("text " * 50, ["method"], [{}])),
-            patch.object(pipeline, "summarize_research_paper", return_value={"summary": "Summary"}),
+            patch.object(pipeline, "summarize_research_paper", side_effect=summarize),
             patch.object(pipeline, "_reference_result_fields", return_value={"references": []}),
             patch.object(pipeline, "active_llm_provider", return_value="ollama"),
             patch.object(pipeline, "active_llm_model", return_value="qwen3:8b"),
@@ -188,6 +195,10 @@ class PipelineDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["llm_model"], "qwen3:8b")
         self.assertEqual(set(diagnostics["stage_seconds"]), {"parse", "section_selection", "summary", "references"})
         self.assertTrue(all(value >= 0 for value in diagnostics["stage_seconds"].values()))
+        usage = diagnostics["llm_usage"]
+        self.assertEqual([call["purpose"] for call in usage["calls"]], ["fact_extraction", "analysis"])
+        self.assertEqual(usage["totals"], {"call_count": 2, "prompt_tokens": 5500, "output_tokens": 1000,
+                                           "thinking_tokens": None, "seconds": 2.0, "tokens_reported": True})
 
     def test_pipeline_early_return_records_llm_selection(self):
         with (
@@ -201,6 +212,51 @@ class PipelineDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["status"], "no_readable_text")
         self.assertEqual(diagnostics["llm_provider"], "gemini")
         self.assertEqual(diagnostics["llm_model"], "gemini-2.5-flash-lite")
+        self.assertEqual(diagnostics["llm_usage"]["totals"]["call_count"], 0)
+
+    def test_pipeline_records_reference_extraction_llm_calls(self):
+        def reference_fields(_raw_text):
+            record_llm_call({"purpose": "reference_extraction", "seconds": 1.0, "prompt_tokens": 3000,
+                             "output_tokens": 800, "thinking_tokens": None})
+            return {"references": []}
+
+        def summarize(*_args, **_kwargs):
+            record_llm_call({"purpose": "analysis", "seconds": 1.0, "prompt_tokens": 1500,
+                             "output_tokens": 500, "thinking_tokens": None})
+            return {"summary": "Summary"}
+
+        common = (
+            patch.object(pipeline, "parse_document_pages", return_value=[{"text": "paper text"}]),
+            patch.object(pipeline, "extract_document_title", return_value="Title"),
+            patch.object(pipeline, "summarize_research_paper", side_effect=summarize),
+            patch.object(pipeline, "_reference_result_fields", side_effect=reference_fields),
+        )
+        for summary_input, purposes in (
+            ("text " * 50, ["analysis", "reference_extraction"]),
+            ("short", ["reference_extraction"]),
+        ):
+            with self.subTest(purposes=purposes), common[0], common[1], common[2], common[3], patch.object(
+                pipeline, "build_summary_input_from_pages", return_value=(summary_input, ["method"], [{}]),
+            ):
+                usage = pipeline.run_pipeline("paper.pdf")["pipeline_diagnostics"]["llm_usage"]
+            self.assertEqual([call["purpose"] for call in usage["calls"]], purposes)
+
+    def test_failed_pipeline_attaches_llm_usage_to_error(self):
+        def summarize(*_args, **_kwargs):
+            record_llm_call({"purpose": "analysis", "seconds": 1.0, "prompt_tokens": 1500,
+                             "output_tokens": 500, "thinking_tokens": None})
+            return {"error": "model crashed"}
+
+        with (
+            patch.object(pipeline, "parse_document_pages", return_value=[{"text": "paper text"}]),
+            patch.object(pipeline, "extract_document_title", return_value="Title"),
+            patch.object(pipeline, "build_summary_input_from_pages", return_value=("text " * 50, ["method"], [{}])),
+            patch.object(pipeline, "summarize_research_paper", side_effect=summarize),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "model crashed") as caught:
+                pipeline.run_pipeline("paper.pdf")
+        totals = caught.exception.llm_usage["totals"]
+        self.assertEqual((totals["call_count"], totals["prompt_tokens"]), (1, 1500))
 
 
 class CompactRetryReasonTests(unittest.TestCase):
