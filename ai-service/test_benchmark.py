@@ -147,7 +147,9 @@ class RunTests(BenchmarkTestCase):
     def test_saves_every_repeat_with_manifest_and_resumes(self):
         with redirect_stdout(StringIO()):
             benchmark.fetch_papers(self.paper_set, self.paper_dir, pause_seconds=0)
-        with self.fake_pipeline([make_result(), RuntimeError("model crashed")]):
+        crash = RuntimeError("model crashed")
+        crash.llm_usage = {"calls": [], "totals": {"call_count": 2}}
+        with self.fake_pipeline([make_result(), crash]):
             output_dir = self.run_benchmark()
         manifest = json.loads((output_dir / "manifest.json").read_text())
         self.assertEqual(manifest["settings"]["model"], "qwen3:8b")
@@ -155,6 +157,8 @@ class RunTests(BenchmarkTestCase):
         runs = sorted((output_dir / "test-paper-1").glob("run-*.json"))
         self.assertEqual([json.loads(path.read_text())["status"] for path in runs], ["ok", "error"])
         self.assertIn("model crashed", json.loads(runs[1].read_text())["error"])
+        self.assertEqual(json.loads(runs[1].read_text())["llm_usage"]["totals"]["call_count"], 2)
+        self.assertNotIn("llm_usage", json.loads(runs[0].read_text()))
 
         with self.fake_pipeline([make_result()]) as run_pipeline:
             self.run_benchmark()
@@ -252,6 +256,17 @@ class CheckTests(BenchmarkTestCase):
         self.assertEqual(checked["cited_share"], 0.75)
         self.assertEqual(checked["invalid_citation_pages"], 1)
         self.assertIsNone(self.check(make_result())["cited_share"])
+
+    def test_token_usage_metrics(self):
+        result = make_result()
+        result["pipeline_diagnostics"]["llm_usage"] = {"calls": [], "totals": {
+            "call_count": 2, "prompt_tokens": 5200, "output_tokens": 1400, "tokens_reported": True}}
+        checked = self.check(result)
+        self.assertEqual((checked["llm_calls"], checked["prompt_tokens"], checked["output_tokens"]), (2, 5200, 1400))
+        # Older runs have no usage data, and partial counts are not reported as totals.
+        self.assertIsNone(self.check(make_result())["prompt_tokens"])
+        result["pipeline_diagnostics"]["llm_usage"]["totals"]["tokens_reported"] = False
+        self.assertIsNone(self.check(result)["prompt_tokens"])
 
     def test_failed_run_is_recorded(self):
         checked = self.check(None, status="error")

@@ -9,6 +9,22 @@ from llm.cancellation import (
     check_analysis_cancelled,
     request_cancellation_token,
 )
+from llm.usage import set_last_usage
+
+
+def _seconds(nanoseconds: Any) -> float | None:
+    return round(nanoseconds / 1e9, 4) if isinstance(nanoseconds, (int, float)) else None
+
+
+def _ollama_usage(chunk: dict[str, Any]) -> dict[str, Any]:
+    # Thinking tokens, when think mode is on, are included in eval_count.
+    return {
+        "prompt_tokens": chunk.get("prompt_eval_count"),
+        "output_tokens": chunk.get("eval_count"),
+        "load_seconds": _seconds(chunk.get("load_duration")),
+        "prompt_seconds": _seconds(chunk.get("prompt_eval_duration")),
+        "output_seconds": _seconds(chunk.get("eval_duration")),
+    }
 
 
 @dataclass(frozen=True)
@@ -40,6 +56,7 @@ class OllamaProvider:
         schema: dict[str, Any] | None = None,
     ) -> str:
         check_analysis_cancelled()
+        set_last_usage(None)
         payload = json.dumps({
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -77,10 +94,13 @@ class OllamaProvider:
                             raise RuntimeError(f"Ollama request failed: {chunk['error']}")
                         message = chunk.get("message") or {}
                         content_parts.append(str(message.get("content") or ""))
+                        if chunk.get("done"):
+                            set_last_usage(_ollama_usage(chunk))
                 else:
                     chunk = json.loads(response.read().decode("utf-8"))
                     message = chunk.get("message") or {}
                     content_parts.append(str(message.get("content") or ""))
+                    set_last_usage(_ollama_usage(chunk))
                 check_analysis_cancelled()
         except AnalysisCancelled:
             raise

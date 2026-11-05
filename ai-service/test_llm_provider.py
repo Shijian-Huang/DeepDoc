@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from llm import summarizer
+from llm.usage import summarize_llm_usage, track_llm_usage
 
 
 class _FakeResponse:
@@ -85,6 +86,69 @@ class LlmProviderTests(unittest.TestCase):
 
         body = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
         self.assertEqual(body["format"], schema)
+
+    def test_ollama_token_usage_is_recorded_per_call(self):
+        response = _FakeResponse({
+            "message": {"content": '{"facts": []}'},
+            "done": True,
+            "prompt_eval_count": 1200,
+            "eval_count": 300,
+            "load_duration": 2_000_000_000,
+            "eval_duration": 6_500_000_000,
+        })
+        with (
+            patch.object(summarizer, "llm_provider", "ollama"),
+            patch.object(summarizer, "ollama_models", ["qwen3:4b"]),
+            patch.object(summarizer, "wait_for_rate_limit"),
+            patch("urllib.request.urlopen", return_value=response),
+        ):
+            with track_llm_usage() as calls:
+                summarizer.generate_json("Return facts", purpose="fact_extraction")
+            summarizer.generate_json("Untracked call")
+
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual((call["purpose"], call["provider"], call["model"], call["status"]),
+                         ("fact_extraction", "ollama", "qwen3:4b", "ok"))
+        self.assertEqual((call["prompt_tokens"], call["output_tokens"]), (1200, 300))
+        self.assertEqual((call["load_seconds"], call["output_seconds"]), (2.0, 6.5))
+        self.assertIsNone(call["thinking_tokens"])
+
+    def test_failed_calls_are_recorded_and_totals_flag_missing_counts(self):
+        response = _FakeResponse({"message": {"content": "not json"}, "done": True,
+                                  "prompt_eval_count": 50, "eval_count": 10})
+        with (
+            patch.object(summarizer, "llm_provider", "ollama"),
+            patch.object(summarizer, "ollama_models", ["qwen3:4b"]),
+            patch.object(summarizer, "wait_for_rate_limit"),
+            patch("urllib.request.urlopen", side_effect=[response, OSError("refused")]),
+        ):
+            with track_llm_usage() as calls:
+                for _ in range(2):
+                    with self.assertRaises(json.JSONDecodeError):
+                        summarizer.generate_json("Return JSON")
+
+        self.assertEqual([call["status"] for call in calls], ["invalid_json", "provider_error"])
+        self.assertEqual(calls[0]["prompt_tokens"], 50)
+        self.assertIsNone(calls[1]["prompt_tokens"])
+        totals = summarize_llm_usage(calls)["totals"]
+        self.assertEqual((totals["call_count"], totals["prompt_tokens"], totals["output_tokens"]), (2, 50, 10))
+        self.assertFalse(totals["tokens_reported"])
+
+    def test_gemini_token_usage_includes_thinking_tokens(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from llm.providers.gemini import GeminiProvider
+        from llm.usage import take_last_usage
+
+        provider = GeminiProvider(None)
+        provider.client = Mock()
+        provider.client.models.generate_content.return_value = SimpleNamespace(
+            text="{}",
+            usage_metadata=SimpleNamespace(prompt_token_count=900, candidates_token_count=250, thoughts_token_count=40),
+        )
+        provider.generate_text("prompt", "gemini-test")
+        self.assertEqual(take_last_usage(), {"prompt_tokens": 900, "output_tokens": 250, "thinking_tokens": 40})
 
     def test_fact_verification_rejects_unknown_sources_and_changed_numbers(self):
         sources = [{

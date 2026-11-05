@@ -215,6 +215,8 @@ def run_benchmark(
                 raise
             except Exception as error:  # a failed paper must not stop the benchmark
                 record.update({"status": "error", "error": f"{type(error).__name__}: {error}"})
+                if getattr(error, "llm_usage", None) is not None:
+                    record["llm_usage"] = error.llm_usage
             record["wall_seconds"] = round(time.perf_counter() - started, 2)
             target.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             print(f"[{done}/{total}] {paper['id']} run {repeat}: {record['status']} in {record['wall_seconds']}s")
@@ -444,7 +446,13 @@ def check_run(record: dict[str, Any], paper: dict[str, Any], paper_text: PaperTe
                                      "medium", "high", "citation mapping", f"pages: {pages}"))
 
     filtered = diagnostics.get("filtered_sentences") or []
+    # Runs saved before token accounting have no llm_usage; report those as missing, not zero.
+    usage = ((result.get("pipeline_diagnostics") or {}).get("llm_usage") or {}).get("totals") or {}
+    usage_known = bool(usage) and usage.get("tokens_reported", False)
     return {
+        "llm_calls": usage.get("call_count"),
+        "prompt_tokens": usage.get("prompt_tokens") if usage_known else None,
+        "output_tokens": usage.get("output_tokens") if usage_known else None,
         "cited_share": round(cited / (cited + uncited), 4) if citations is not None and cited is not None and (cited + uncited) else None,
         "invalid_citation_pages": invalid_citations if citations is not None else None,
         "paper_id": paper_id,
@@ -531,6 +539,9 @@ METRICS = [
     ("Summary words", "summary_words", "info", "num"),
     ("Key ideas", "key_idea_count", "info", "num"),
     ("Contributions", "contribution_count", "info", "num"),
+    ("LLM calls per paper", "llm_calls", "info", "num"),
+    ("Prompt tokens per paper", "prompt_tokens", "info", "num"),
+    ("Output tokens per paper", "output_tokens", "info", "num"),
     ("Fact-extraction retries (share)", "compact_retry", "lower", "pct"),
     ("Deterministic fallbacks (share)", "deterministic_fallback", "lower", "pct"),
 ]
