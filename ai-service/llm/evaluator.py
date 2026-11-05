@@ -34,6 +34,7 @@ class EvaluationError(RuntimeError):
 class EvidencePacket:
     id: str
     text: str
+    evaluation_field: str | None = None
 
 
 class EvaluationJudge(Protocol):
@@ -254,7 +255,7 @@ class OllamaJudge(GeminiJudge):
         self._provider = provider if provider is not None else OllamaProvider(
             base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/"),
             context_length=int(os.getenv("OLLAMA_CONTEXT_LENGTH", "12288")),
-            num_predict=int(os.getenv("OLLAMA_JUDGE_NUM_PREDICT", "8192")),
+            num_predict=int(os.getenv("OLLAMA_JUDGE_NUM_PREDICT", "12288")),
             keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "10m").strip() or "10m",
             think=os.getenv("OLLAMA_THINK", "false").strip().lower() in {"1", "true", "yes", "on"},
             cpu_only=os.getenv("OLLAMA_CPU_ONLY", "false").strip().lower() in {"1", "true", "yes", "on"},
@@ -409,6 +410,74 @@ class SummaryEvaluator:
         return _summary_text(value)
 
 
+def evaluate_pipeline_output(
+    payload: Mapping[str, Any], *, judge: EvaluationJudge | None = None,
+) -> dict[str, Any]:
+    """Evaluate saved pipeline fields against their source excerpts (scores 0–1).
+
+    Completeness gives partial coverage half credit. Faithfulness is the
+    supported claim fraction, or null when the field makes no claims.
+    """
+    if not isinstance(payload, Mapping):
+        raise EvaluationError("Pipeline output must be a JSON object.")
+    result = payload.get("results", payload.get("result", payload))
+    if not isinstance(result, Mapping):
+        raise EvaluationError("Pipeline result must be an object.")
+    document = result.get("document_summary")
+    sources = result.get("evidence_sources")
+    if not isinstance(document, Mapping):
+        raise EvaluationError("document_summary must be an object.")
+    if not isinstance(sources, list) or not sources:
+        raise EvaluationError("evidence_sources must be a non-empty array.")
+    excerpts = []
+    for index, source in enumerate(sources):
+        if (not isinstance(source, Mapping)
+                or not isinstance(source.get("excerpt"), str)
+                or not source["excerpt"].strip()):
+            raise EvaluationError(f"evidence_sources[{index}] requires a non-empty excerpt.")
+        excerpts.append({"source_id": source.get("source_id", str(index)),
+                         "excerpt": source["excerpt"]})
+    candidates = {}
+    for field in ("key_ideas", "contributions", "evidence", "summary"):
+        value = document.get(field)
+        if field == "summary":
+            if not isinstance(value, str):
+                raise EvaluationError("document_summary.summary must be a string.")
+            candidates[field] = value
+        else:
+            if not isinstance(value, list):
+                raise EvaluationError(f"document_summary.{field} must be an array.")
+            texts = []
+            for item in value:
+                text = item.get("claim") if field == "evidence" and isinstance(item, Mapping) else item
+                if not isinstance(text, str) or not text.strip():
+                    raise EvaluationError(f"document_summary.{field} contains an invalid item.")
+                texts.append(text)
+            candidates[field] = "\n".join(texts)
+    selected_judge = judge if judge is not None else create_evaluation_judge()
+    evaluations = {}
+    for field, candidate in candidates.items():
+        packet = EvidencePacket(str(payload.get("paper_id", "pipeline")),
+                                json.dumps(excerpts, ensure_ascii=False), field)
+        judgment = _normalize_judgment(selected_judge.evaluate(candidate, packet))
+        if not candidate.strip():
+            # Empty fields cannot receive coverage or claim credit from a judge.
+            if judgment["total_summary_claims"] or any(
+                judgment[d]["covered"] or judgment[d]["partial_covered"]
+                for d in ("key_ideas", "contributions")
+            ):
+                raise EvaluationError(f"Judge credited claims or coverage to empty {field}.")
+        dimensions = (field,) if field in {"key_ideas", "contributions"} else ("key_ideas", "contributions")
+        completeness = sum(_coverage_score(judgment[d]) for d in dimensions) / len(dimensions)
+        total = judgment["total_summary_claims"]
+        evaluations[field] = {
+            "faithfulness": round(1 - len(judgment["hallucinated_claims"]) / total, 4) if total else None,
+            "completeness": round(completeness, 4),
+            "assessment": judgment,
+        }
+    return {"fields": evaluations}
+
+
 def load_default_evidence_packets(path: str | Path = DEFAULT_PACKETS_PATH) -> list[EvidencePacket]:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -420,9 +489,22 @@ def load_default_evidence_packets(path: str | Path = DEFAULT_PACKETS_PATH) -> li
 
 
 def build_evaluation_prompt(summary: str, packet: EvidencePacket) -> str:
+    field_instruction = ""
+    if packet.evaluation_field:
+        field_instruction = f"""
+The candidate is the document_summary.{packet.evaluation_field} field, evaluated
+independently of the other output fields. Empty content has no claims and covers
+no expected items. Evaluate only the candidate's claims for faithfulness against
+the source excerpts; source IDs and other metadata are not proof of support.
+For completeness, key_ideas should cover the central concepts; contributions
+should cover the novel advances; evidence should cover the central supporting
+claims and findings; summary should cover both central ideas and contributions.
+Do not require exhaustive reproduction of incidental source details.
+"""
     return f"""
 You are a strict evaluator of a research-paper summary. The evidence packet is
 the only source of truth. Do not use outside knowledge.
+{field_instruction}
 
 First identify the distinct key ideas and distinct novel contributions that a
 faithful summary should contain. Then compare the candidate summary with them.
