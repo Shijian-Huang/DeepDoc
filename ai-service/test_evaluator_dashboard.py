@@ -4,8 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
-from evaluation.dashboard import DashboardEvaluator, JsonResultStore, build_custom_packet
-from llm.evaluator import EvidencePacket, EvaluationError
+from evaluation.dashboard import (
+    DashboardEvaluator, DashboardRequest, JsonResultStore, build_custom_packet,
+    _evaluation_error_message, evaluate_selection,
+)
+from fastapi import HTTPException
+from llm.evaluator import EvidencePacket, EvaluationError, GeminiJudge, OllamaJudge
+from llm.summarizer import LLMProviderError
 
 
 @dataclass
@@ -101,6 +106,29 @@ class DashboardEvaluatorTests(unittest.TestCase):
         self.assertEqual(self.model_a.calls, 1)
         self.assertEqual(self.model_b.calls, 0)
         self.assertEqual(self.judge.calls, 1)
+
+    def test_configuration_identifies_the_active_judge(self):
+        for judge, provider in (
+            (OllamaJudge("gpt-oss:20b"), "ollama"),
+            (GeminiJudge(model="gemini-test"), "gemini"),
+        ):
+            self.dashboard.judge = judge
+            self.assertEqual(self.dashboard.configuration()["judge"], {
+                "provider": provider, "model": judge.model,
+            })
+
+    def test_provider_failure_is_not_reported_as_invalid_json(self):
+        error = LLMProviderError("Summary generation failed for gemini model 'test'", "HTTP 429: quota exceeded", 0)
+        message = _evaluation_error_message(error)
+        self.assertIn("HTTP 429: quota exceeded", message)
+        self.assertIn("gemini model 'test'", message)
+        self.assertNotIn("invalid JSON", message)
+        with patch("evaluation.dashboard.dashboard_evaluator") as dashboard:
+            dashboard.evaluate.side_effect = error
+            with self.assertRaises(HTTPException) as caught:
+                evaluate_selection(DashboardRequest(model_names=["Model A"], paper_ids=["paper-a"]))
+        self.assertEqual(caught.exception.status_code, 502)
+        self.assertEqual(caught.exception.detail, message)
 
     def test_force_runs_summary_and_evaluation_again(self):
         self.dashboard.evaluate(["Model A"], ["paper-a"], "paragraph")

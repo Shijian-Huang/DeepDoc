@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,9 @@ from llm.evaluator import (
     EvidencePacket,
     EvaluationError,
     GeminiJudge,
+    OllamaJudge,
+    JUDGE_RESPONSE_SCHEMA,
+    create_evaluation_judge,
     MiniCheckFactChecker,
     SummaryEvaluator,
     _coverage_score,
@@ -62,6 +66,62 @@ class SummaryEvaluatorTests(unittest.TestCase):
             json.loads(_extract_json('{"status": "ok"}\n{"extra": true}')),
             {"status": "ok"},
         )
+
+    def test_judge_selection_prefers_local_model_and_falls_back_when_empty(self):
+        with patch.dict(os.environ, {"OLLAMA_JUDGE_MODEL": "gpt-oss:20b", "GEMINI_API_KEY": ""}):
+            evaluator = SummaryEvaluator({"model": "Summary"}, [self.packet])
+            self.assertIsInstance(evaluator._judge, OllamaJudge)
+            self.assertEqual(evaluator._judge.model, "gpt-oss:20b")
+            self.assertEqual(evaluator._judge._provider.temperature, 0)
+        for value in (None, "", "   "):
+            with patch.dict(os.environ):
+                os.environ.pop("OLLAMA_JUDGE_MODEL", None)
+                if value is not None:
+                    os.environ["OLLAMA_JUDGE_MODEL"] = value
+                self.assertIsInstance(create_evaluation_judge(), GeminiJudge)
+                self.assertNotIsInstance(create_evaluation_judge(), OllamaJudge)
+
+    def test_local_judge_uses_existing_prompt_and_scoring(self):
+        expected = FakeJudge().evaluate("Summary", self.packet)
+        provider = Mock()
+        provider.generate_text.return_value = json.dumps(expected)
+        judge = OllamaJudge("gpt-oss:20b", provider=provider)
+        result = SummaryEvaluator({"model": "Summary"}, [self.packet], judge=judge).evaluate()
+        provider.generate_text.assert_called_once_with(
+            build_evaluation_prompt("Summary", self.packet), "gpt-oss:20b",
+            schema=JUDGE_RESPONSE_SCHEMA,
+        )
+        self.assertEqual(result["model"][0]["evaluation"]["avg_score"], 0.5196)
+
+    def test_local_judge_errors_do_not_fall_back_to_gemini(self):
+        provider = Mock()
+        judge = OllamaJudge("gpt-oss:20b", provider=provider)
+        provider.generate_text.side_effect = RuntimeError("offline")
+        with self.assertRaisesRegex(EvaluationError, "Ollama judge request failed"):
+            judge.evaluate("Summary", self.packet)
+        provider.generate_text.side_effect = None
+        provider.generate_text.return_value = "invalid JSON"
+        with self.assertRaisesRegex(EvaluationError, "Ollama judge did not return valid JSON"):
+            judge.evaluate("Summary", self.packet)
+
+    def test_local_judge_does_not_silently_replace_inconsistent_denominator(self):
+        invalid = FakeJudge().evaluate("Summary", self.packet)
+        invalid["key_ideas"]["expected"] = 9
+        provider = Mock()
+        provider.generate_text.return_value = json.dumps(invalid)
+        with self.assertRaisesRegex(EvaluationError, "expected=9"):
+            OllamaJudge("gpt-oss:20b", provider=provider).evaluate("Summary", self.packet)
+        self.assertEqual(provider.generate_text.call_count, 1)
+
+    def test_local_cache_identity_tracks_provider_configuration(self):
+        with patch.dict(os.environ, {"OLLAMA_JUDGE_MODEL": "gpt-oss:20b"}):
+            judge = create_evaluation_judge()
+            original = judge.cache_identity
+            self.assertNotEqual(original, GeminiJudge(model=judge.model).cache_identity)
+            judge.model = "another-model"
+            self.assertNotEqual(original, judge.cache_identity)
+            with patch.dict(os.environ, {"OLLAMA_CONTEXT_LENGTH": "16384"}):
+                self.assertNotEqual(original, create_evaluation_judge().cache_identity)
 
     def test_judge_cache_identity_tracks_model_prompt_and_configuration(self):
         judge = GeminiJudge(model="judge-a", api_key="unused")

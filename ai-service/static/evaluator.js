@@ -48,6 +48,10 @@ async function loadConfiguration() {
     const response = await fetch("/api/evaluator/config");
     if (!response.ok) throw new Error("Could not load evaluator configuration.");
     state.config = await response.json();
+    const judge = state.config.judge;
+    $("judge-info").textContent = judge
+      ? `Current judge: ${judge.model || "Custom judge"} (${judge.provider})`
+      : "Current judge: unavailable";
     $("models").innerHTML = state.config.models.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
     $("papers").innerHTML = state.config.papers.map((paper) => `<option value="${escapeHtml(paper.id)}">${escapeHtml(paper.label)} · ${escapeHtml(paper.id)}</option>`).join("");
     $("summary-modes").innerHTML = state.config.summary_modes.map((mode) => `

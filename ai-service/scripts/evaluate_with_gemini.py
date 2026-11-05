@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise SummaryEvaluator with the real Gemini summarizer and judge.
+"""Exercise SummaryEvaluator with the Gemini summarizer and configured judge.
 
 Pass an evidence-packet JSON file as the optional positional argument. When it
 is omitted, the evaluator uses ``evaluation/default_packets.json``.
@@ -23,7 +23,7 @@ from llm import summarizer  # noqa: E402
 from llm.evaluator import (  # noqa: E402
     DEFAULT_PACKETS_PATH,
     EvaluationError,
-    GeminiJudge,
+    create_evaluation_judge,
     SummaryEvaluator,
 )
 
@@ -32,7 +32,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Generate summaries with Gemini and evaluate them with the "
-            "Gemini-backed SummaryEvaluator judge."
+            "configured Ollama or Gemini SummaryEvaluator judge."
         ),
     )
     parser.add_argument(
@@ -64,8 +64,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--judge-model",
         help=(
-            "Gemini model used by the judge. Defaults to GEMINI_EVALUATOR_MODEL "
-            "or the evaluator's built-in default."
+            "Override the judge model. Uses Ollama when OLLAMA_JUDGE_MODEL is set; "
+            "otherwise uses GEMINI_EVALUATOR_MODEL or the built-in Gemini default."
         ),
     )
     parser.add_argument(
@@ -109,7 +109,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         summary_generator=generate_summary,
         summary_mode=args.summary_mode,
         default_packets_path=args.packet_file,
-        judge=GeminiJudge(model=args.judge_model),
+        judge=create_evaluation_judge(model=args.judge_model),
     )
     return evaluator.evaluate(args.mode, visualize=args.visualize)
 

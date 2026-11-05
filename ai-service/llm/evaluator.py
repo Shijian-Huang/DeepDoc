@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import gettempdir
@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 from utils.summary_prompt import build_research_summary_prompt, normalize_summary_mode
+from llm.providers.ollama import OllamaProvider
 
 DEFAULT_PACKETS_PATH = Path(__file__).resolve().parents[1] / "evaluation" / "default_packets.json"
 DEFAULT_EVALUATION_DIR = Path(__file__).resolve().parents[1] / "data" / "eval"
@@ -22,6 +23,8 @@ try:
 except ImportError:
     pass
 
+# Disable GPU usage for MiniCheck
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 class EvaluationError(RuntimeError):
     """Raised when an evaluation input or judge response is invalid."""
@@ -125,6 +128,46 @@ EVALUATION_PIPELINE_VERSION = "3"
 JUDGE_RESPONSE_MIME_TYPE = "application/json"
 JUDGE_TEMPERATURE = 0
 
+_COVERAGE_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Count distinct items in mutually exclusive categories. expected MUST equal "
+        "covered + partial_covered + the number of strings in missing. "
+        "List each missing item separately; expected must be positive."
+    ),
+    "properties": {
+        "covered": {"type": "integer", "minimum": 0},
+        "partial_covered": {"type": "integer", "minimum": 0},
+        "expected": {"type": "integer", "minimum": 1},
+        "missing": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["covered", "partial_covered", "expected", "missing"],
+    "additionalProperties": False,
+}
+JUDGE_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key_ideas": _COVERAGE_SCHEMA,
+        "contributions": _COVERAGE_SCHEMA,
+        "hallucinated_claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "evidence": {"type": ["string", "null"]},
+                },
+                "required": ["claim", "reason", "evidence"],
+                "additionalProperties": False,
+            },
+        },
+        "total_summary_claims": {"type": "integer", "minimum": 0},
+    },
+    "required": ["key_ideas", "contributions", "hallucinated_claims", "total_summary_claims"],
+    "additionalProperties": False,
+}
+
 
 class GeminiJudge:
     """Gemini-backed judge; replace this class through dependency injection."""
@@ -201,6 +244,62 @@ class GeminiJudge:
             raise EvaluationError("Gemini judge did not return valid JSON.") from error
 
 
+class OllamaJudge(GeminiJudge):
+    """Local judge using the same prompt and JSON contract as Gemini."""
+
+    def __init__(self, model: str | None = None, *, provider: OllamaProvider | None = None) -> None:
+        self.model = (model or os.getenv("OLLAMA_JUDGE_MODEL", "")).strip()
+        if not self.model:
+            raise EvaluationError("OLLAMA_JUDGE_MODEL is not configured for the evaluation judge.")
+        self._provider = provider if provider is not None else OllamaProvider(
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/"),
+            context_length=int(os.getenv("OLLAMA_CONTEXT_LENGTH", "12288")),
+            num_predict=int(os.getenv("OLLAMA_JUDGE_NUM_PREDICT", "8192")),
+            keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "10m").strip() or "10m",
+            think=os.getenv("OLLAMA_THINK", "false").strip().lower() in {"1", "true", "yes", "on"},
+            cpu_only=os.getenv("OLLAMA_CPU_ONLY", "false").strip().lower() in {"1", "true", "yes", "on"},
+            temperature=JUDGE_TEMPERATURE,
+        )
+
+    @property
+    def cache_identity(self) -> str:
+        value = json.dumps([super().cache_identity, asdict(self._provider), JUDGE_RESPONSE_SCHEMA, "validated-single-request-v1"], sort_keys=True)
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def evaluate(self, summary: str, evidence_packet: EvidencePacket) -> Mapping[str, Any]:
+        return _normalize_judgment(self._request_judgment(summary, evidence_packet))
+
+    def _request_judgment(
+        self, summary: str, evidence_packet: EvidencePacket,
+    ) -> Mapping[str, Any]:
+        try:
+            raw_text = self._provider.generate_text(
+                build_evaluation_prompt(summary, evidence_packet), self.model,
+                schema=JUDGE_RESPONSE_SCHEMA,
+            )
+        except Exception as error:
+            raise EvaluationError(f"Ollama judge request failed: {error}") from error
+        try:
+            return json.loads(_extract_json(raw_text.strip()))
+        except (json.JSONDecodeError, TypeError) as error:
+            detail = (
+                f"{error.msg} at line {error.lineno}, column {error.colno}"
+                if isinstance(error, json.JSONDecodeError) else str(error)
+            )
+            raise EvaluationError(
+                f"Ollama judge did not return valid JSON (model={self.model}, "
+                f"answer_characters={len(raw_text)}, {detail}). "
+                "Try increasing OLLAMA_JUDGE_NUM_PREDICT if the answer is truncated."
+            ) from error
+
+
+def create_evaluation_judge(model: str | None = None) -> EvaluationJudge:
+    """Prefer the configured local judge; use Gemini only when it is unset."""
+    if os.getenv("OLLAMA_JUDGE_MODEL", "").strip():
+        return OllamaJudge(model=model)
+    return GeminiJudge(model=model)
+
+
 class SummaryEvaluator:
     """Evaluate every model summary against every selected evidence packet.
 
@@ -223,7 +322,7 @@ class SummaryEvaluator:
         evaluation_dir: str | Path | None = None,
     ) -> None:
         self._model_sources = _normalize_models(models, summary_generator)
-        self._judge = judge or GeminiJudge()
+        self._judge = judge if judge is not None else create_evaluation_judge()
         self._fact_checker = fact_checker if fact_checker is not None else MiniCheckFactChecker()
         self._summary_generator = summary_generator
         self._summary_mode = normalize_summary_mode(summary_mode)
@@ -475,7 +574,9 @@ def _normalize_dimension(value: Any, path: str) -> dict[str, Any]:
     if covered + partial + len(missing) != expected:
         raise EvaluationError(
             f"The judge response is malformed: {path}.expected must equal covered, "
-            "partial_covered, and missing items combined."
+            f"partial_covered, and missing items combined "
+            f"(expected={expected}, covered={covered}, partial_covered={partial}, "
+            f"missing_items={len(missing)}, combined={covered + partial + len(missing)})."
         )
     return {
         "covered": covered,

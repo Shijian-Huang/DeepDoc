@@ -238,6 +238,9 @@ def extract_json(raw_text: str) -> str:
 class LLMProviderError(json.JSONDecodeError):
     """A provider/API failure, raised as a JSONDecodeError so existing retry and fallback handling still applies."""
 
+    def __str__(self) -> str:
+        return f"{self.msg}: {self.doc}" if self.doc else self.msg
+
 
 def generate_json(prompt: str, schema: Optional[dict] = None):
     require_llm_configuration()
@@ -268,7 +271,11 @@ def generate_json(prompt: str, schema: Optional[dict] = None):
             provider_failed = False
 
     if provider_failed:
-        raise LLMProviderError("LLM provider request failed", last_raw_text, 0)
+        raise LLMProviderError(
+            f"Summary generation failed for {provider} model '{model}'",
+            last_raw_text,
+            0,
+        )
     raise json.JSONDecodeError("Could not parse model response as JSON", last_raw_text, 0)
 
 

@@ -251,11 +251,47 @@ class CompactRetryReasonTests(unittest.TestCase):
                 summarizer.generate_json("prompt")
         self.assertIsInstance(caught.exception, summarizer.LLMProviderError)
         self.assertEqual(caught.exception.doc, "HTTP 503")
+        self.assertIn("gemini", str(caught.exception))
+        self.assertIn("HTTP 503", str(caught.exception))
+        self.assertNotIn("line 1 column 1", str(caught.exception))
 
 
 class ProviderFailureTests(unittest.TestCase):
     def ollama(self):
         return OllamaProvider("http://localhost:11434", 12288, 3072, "10m", False, False)
+
+    def test_gpt_oss_stream_separates_reasoning_and_uses_low_effort(self):
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__iter__.return_value = iter([
+            b'{"message":{"thinking":"reasoning"}}\n',
+            b'{"message":{"content":"{\\"ok\\":true}"}}\n',
+            b'{"done":true,"done_reason":"stop"}\n',
+        ])
+        with patch("urllib.request.urlopen", return_value=response) as request:
+            self.assertEqual(self.ollama().generate_text(
+                "prompt", "gpt-oss:20b",
+            ), '{"ok":true}')
+        payload = json.loads(request.call_args.args[0].data)
+        self.assertEqual(payload["think"], "low")
+        self.assertEqual(payload["messages"], [
+            {"role": "user", "content": "prompt"},
+        ])
+
+    def test_ollama_reports_token_exhaustion_and_thinking_only_answers(self):
+        from unittest.mock import MagicMock
+        for reason, expected in (("length", "exhausted its output token budget"), ("stop", "returned an empty answer")):
+            with self.subTest(reason=reason):
+                response = MagicMock()
+                response.__enter__.return_value = response
+                response.__iter__.return_value = iter([
+                    b'{"message":{"thinking":"reasoning"}}\n',
+                    json.dumps({"done": True, "done_reason": reason, "eval_count": 3072}).encode(),
+                ])
+                with patch("urllib.request.urlopen", return_value=response):
+                    with self.assertRaisesRegex(RuntimeError, expected):
+                        self.ollama().generate_text("prompt", "gpt-oss:20b")
 
     def test_gemini_sdk_error_is_reported(self):
         provider = GeminiProvider(None)

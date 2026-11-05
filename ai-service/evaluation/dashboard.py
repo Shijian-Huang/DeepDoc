@@ -16,12 +16,15 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from evaluation.models import EvaluationModel, model_registry
+from llm.summarizer import LLMProviderError
 from llm.evaluator import (
     DEFAULT_PACKETS_PATH,
     EVALUATION_PIPELINE_VERSION,
     EvidencePacket,
     EvaluationJudge,
+    OllamaJudge,
     GeminiJudge,
+    create_evaluation_judge,
     SCORE_FIELDS,
     SummaryEvaluator,
     load_default_evidence_packets,
@@ -94,12 +97,18 @@ class DashboardEvaluator:
         return cls(
             models=model_registry(),
             packets=load_default_evidence_packets(DEFAULT_PACKETS_PATH),
-            judge=GeminiJudge(),
+            judge=create_evaluation_judge(),
             store=JsonResultStore(),
         )
 
     def configuration(self) -> dict[str, Any]:
         return {
+            "judge": {
+                "provider": "ollama" if isinstance(self.judge, OllamaJudge) else (
+                    "gemini" if isinstance(self.judge, GeminiJudge) else type(self.judge).__name__
+                ),
+                "model": getattr(self.judge, "model", None),
+            },
             "models": list(self.models),
             "papers": [{"id": packet.id, "label": _paper_label(packet.id)} for packet in self.packets],
             "summary_modes": list(SUMMARY_MODE_INSTRUCTIONS),
@@ -352,6 +361,8 @@ def _response(rows: list[dict[str, Any]], summary_mode: str, *, averaged: bool) 
 
 
 def _evaluation_error_message(error: Exception) -> str:
+    if isinstance(error, LLMProviderError):
+        return str(error)
     if isinstance(error, json.JSONDecodeError):
         raw_response = str(error.doc or "").strip()
         if not raw_response:
@@ -405,10 +416,12 @@ def evaluate_selection(request: DashboardRequest):
             request.summary_mode,
             force=request.force,
         )
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=502, detail=_evaluation_error_message(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
-        raise HTTPException(status_code=502, detail=f"Evaluation failed: {error}") from error
+        raise HTTPException(status_code=502, detail=f"Evaluation failed: {_evaluation_error_message(error)}") from error
 
 
 @router.post("/api/evaluator/custom")
@@ -443,6 +456,8 @@ def evaluate_custom_summary(
             selected_models,
             force=force,
         )
+    except LLMProviderError as error:
+        raise HTTPException(status_code=502, detail=_evaluation_error_message(error)) from error
     except (json.JSONDecodeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
